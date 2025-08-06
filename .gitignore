@@ -1,43 +1,64 @@
-# Node modules
-node_modules/
-
-# Build outputs
-dist/
-build/
-
-# Server uploads
-server/uploads/
-
-# Temporary files
-*.log
+# ─────────────────────────────────────────────────────────────────────────────
+# 1) Global / OS / Editor
+# ─────────────────────────────────────────────────────────────────────────────
+# macOS
+.DS_Store
+# Windows
+Thumbs.db
+# IDEs
+.vscode/
+.idea/
+# Logs
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+*.log
 
-# OS files
-.DS_Store
-Thumbs.db
+# ─────────────────────────────────────────────────────────────────────────────
+# 2) Docker / Containers
+# ─────────────────────────────────────────────────────────────────────────────
+docker-compose.override.yml
+**/docker-compose.override.yml
 
-# Environment variables
+# ─────────────────────────────────────────────────────────────────────────────
+# 3) Node.js (client, embed-server, server)
+# ─────────────────────────────────────────────────────────────────────────────
+# dependencies
+**/node_modules/
+# build outputs
+**/dist/
+**/build/
+# pnpm
+**/.pnpm/
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4) Python (embed-server may use Python)
+# ─────────────────────────────────────────────────────────────────────────────
+**/__pycache__/
+**/*.py[cod]
+# virtual environments
+**/venv/
+**/.venv/
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 5) Service-specific data
+# ─────────────────────────────────────────────────────────────────────────────
+# server uploads, temp files, OCR artifacts
+/server/uploads/
+/server/temp-ocr/
+/server/*.sqlite3
+
+# embed-server cache, local data
+/embed-server/data/
+/embed-server/temp/
+
+# client local build / serving cache
+/client/.next/
+/client/out/
+/client/.cache/
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6) Secret files and env
+# ─────────────────────────────────────────────────────────────────────────────
 .env
-.env.local
-
-# IDE / Editor
-.vscode/
-.idea/
-
-# PDF-to-image temp files
-*.png
-*.ppm
-
-# Qdrant client cache (if any)
-.qdrant_cache/
-
-# BullMQ persisted data
-*.db
-
-# Lock files
-package-lock.json
-pnpm-lock.yaml
-
-yarn.lock
+**/*.env
