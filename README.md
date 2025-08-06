@@ -15,7 +15,7 @@ chat-with-files/
 
 ## Prerequisites
 
-### System Dependencies
+<!-- ### System Dependencies
 
 These tools must be installed globally (via Homebrew or your OS package manager):
 
@@ -30,64 +30,41 @@ sudo apt-get update
 sudo apt-get install -y graphicsmagick poppler-utils ghostscript
 
 # Fedora/CentOS
-sudo dnf install -y GraphicsMagick poppler-utils ghostscript
-```
+sudo dnf install -y GraphicsMagick poppler-utils ghostscript -->
+
+````
 
 ### Node.js & PNPM
 
 * Node.js `>=14.x`
-* PNPM (or npm/yarn)
+* PNPM
 
 ## Setup
 
 1. **Clone the repository**
 
    ```bash
-   ```
+````
 
-git clone [git@github.com](mailto:git@github.com)\:your-org/chat-with-files.git
+git clone https://github.com/adityamishra9/chat-with-files.git
 cd chat-with-files
 
-````
+```
 
-2. **Apply `.gitignore` rules** (only needed once)
-   ```bash
-git rm -r --cached .
-git add .
-git commit -m "chore: apply .gitignore"
-````
+2. **Install dependencies**
 
-3. **Install dependencies**
+```
 
-   * Root-level (for Docker Compose)
-
-     ```bash
-     ```
-
-# if you use Yarn or npm, install globally
-
-pnpm install
-
-````
-   - **Client**
-     ```bash
-cd client
-pnpm install
-````
-
-* **Embed Server**
-
+- **Client**
   ```bash
-  ```
-
-cd ../embed-server
-pnpm install
+  cd client
+  pnpm i
 
 ````
    - **Server**
      ```bash
 cd ../server
-pnpm install
+pnpm i
 ````
 
 ## Running the Application
@@ -95,26 +72,28 @@ pnpm install
 You can use Docker Compose to bring up all services together:
 
 ```bash
-docker-compose up --build
+docker-compose up -d
 ```
 
-Alternatively, start each service manually:
+Then, start each service manually:
 
-1. **Embed Server**
+1. **Worker Server**
+   ```bash
+   cd ../server
+   pnpm dev:worker
+   ```
+
+````
+
+2. **Server**
 
    ```bash
    ```
 
-cd embed-server
-pnpm dev
-
-````
-
-2. **Worker Server**
-   ```bash
 cd ../server
 pnpm dev
-````
+
+```
 
 3. **Client**
 
@@ -145,6 +124,5 @@ See the root `.gitignore` for patterns covering:
 - System artifacts (logs, OS files, IDE folders)
 - Service-specific folders (`server/uploads/`, OCR temp files)
 
-Service-level folders (`client/`, `embed-server/`, `server/`) each contain their own `.gitignore` for local artifacts.
-
-AI generated README
+This is an AI generated README, will modify later
+````
