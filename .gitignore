@@ -1,0 +1,43 @@
+# Node modules
+node_modules/
+
+# Build outputs
+dist/
+build/
+
+# Server uploads
+server/uploads/
+
+# Temporary files
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment variables
+.env
+.env.local
+
+# IDE / Editor
+.vscode/
+.idea/
+
+# PDF-to-image temp files
+*.png
+*.ppm
+
+# Qdrant client cache (if any)
+.qdrant_cache/
+
+# BullMQ persisted data
+*.db
+
+# Lock files
+package-lock.json
+pnpm-lock.yaml
+
+yarn.lock

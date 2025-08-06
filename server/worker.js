@@ -1,10 +1,11 @@
-// worker.js
 import { Worker } from "bullmq";
 import fetch from "node-fetch";
 import { QdrantClient } from "@qdrant/js-client-rest";
 import { QdrantVectorStore } from "@langchain/qdrant";
 import { PDFLoader } from "@langchain/community/document_loaders/fs/pdf";
 import { CharacterTextSplitter } from "@langchain/textsplitters";
+import { fromPath } from "pdf2pic";
+import tesseract from "node-tesseract-ocr";
 
 // Call local FastAPI embeddings endpoint
 async function embedLocally(texts) {
@@ -18,6 +19,41 @@ async function embedLocally(texts) {
   return data.embeddings;
 }
 
+// Fallback OCR: render PDF pages to images and run Tesseract
+async function ocrPdf(path) {
+  console.log(`OCR: starting OCR fallback for ${path}`);
+  let pages = [];
+  try {
+    const converter = fromPath(path, { density: 200, format: "png" });
+    console.log("OCR: converting PDF to images...");
+    pages = await converter.bulk(-1);
+    console.log(`OCR: rendered ${pages.length} image(s)`);
+  } catch (err) {
+    console.error("OCR: error rendering PDF to images:", err);
+    console.error("Make sure you have GraphicsMagick/ImageMagick installed and on your PATH. e.g. 'brew install graphicsmagick' or 'brew install imagemagick'");
+    return [];
+  }
+
+  const docs = [];
+  for (let i = 0; i < pages.length; i++) {
+    const imgPath = pages[i].path;
+    console.log(`OCR: processing image [${i + 1}/${pages.length}] -> ${imgPath}`);
+    try {
+      const text = await tesseract.recognize(imgPath, {
+        lang: "eng",
+        oem: 1,
+        psm: 3,
+      });
+      console.log(`OCR: extracted ${text.length} chars from page ${i + 1}`);
+      docs.push({ pageContent: text, metadata: { page: i + 1 } });
+    } catch (err) {
+      console.error(`OCR: error on page ${i + 1}:`, err);
+    }
+  }
+  console.log("OCR: completed all pages");
+  return docs;
+}
+
 new Worker(
   "file-upload-queue",
   async (job) => {
@@ -28,8 +64,20 @@ new Worker(
     const { path } = payload;
 
     console.log("Loading PDF from path:", path);
-    const docs = await new PDFLoader(path).load();
-    console.log(`Loaded ${docs.length} page(s)`);
+    let docs = [];
+    try {
+      docs = await new PDFLoader(path).load();
+      console.log(`Loaded ${docs.length} page(s) via PDFLoader`);
+    } catch (err) {
+      console.error("PDFLoader error:", err);
+    }
+
+    // If no text pages, fall back to OCR
+    if (!docs.length || docs.every(d => !d.pageContent.trim())) {
+      console.log("No text found—running OCR fallback");
+      docs = await ocrPdf(path);
+      console.log(`Loaded ${docs.length} page(s) via OCR`);
+    }
 
     console.log("Splitting documents into chunks...");
     const splitter = new CharacterTextSplitter({ chunkSize: 1000, chunkOverlap: 200 });
@@ -38,7 +86,7 @@ new Worker(
     console.log("Sample chunk[0]:", chunks[0]?.pageContent.slice(0, 100));
 
     console.log("Generating embeddings via local FastAPI...");
-    let vectors;
+    let vectors = [];
     try {
       const texts = chunks.map(c => c.pageContent);
       vectors = await embedLocally(texts);
