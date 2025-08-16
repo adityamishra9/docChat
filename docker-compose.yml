@@ -1,15 +1,46 @@
 services:
   valkey:
     image: valkey/valkey:latest
-    ports:
-      - "6379:6379"
+    ports: ["6379:6379"]
+
+  mongo:
+    image: mongo:7
+    ports: ["27017:27017"]
+    volumes:
+      - mongo_data:/data/db
 
   qdrant:
     image: qdrant/qdrant:latest
-    ports:
-      - "6333:6333"
+    ports: ["6333:6333", "6334:6334"]
+    volumes:
+      - qdrant_data:/qdrant/storage
 
   embedder:
     build: ./embed-server
-    ports:
-      - "8001:8000"
+    ports: ["8001:8000"]   # container 8000, host 8001
+    env_file: [.env]       # EMBEDDINGS_URL points here from server
+    # Your embed server should bind 0.0.0.0:8000 inside the container
+
+  # server:
+  #   build: ./server
+  #   ports: ["8000:8000"]
+  #   env_file: [.env]
+  #   depends_on: [valkey, qdrant, embedder]
+  #   volumes:
+  #     - server_uploads:/app/uploads          # persistent uploads
+  #     - server_data:/app/data                # tiny JSON “DB”
+
+  # worker:
+  #   build: ./server
+  #   command: ["node", "worker.js"]
+  #   env_file: [.env]
+  #   depends_on: [valkey, qdrant, embedder]
+  #   volumes:
+  #     - server_uploads:/app/uploads
+  #     - server_data:/app/data
+
+volumes:
+  mongo_data:
+  qdrant_data:
+  server_uploads:
+  server_data:

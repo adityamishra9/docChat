@@ -47,6 +47,7 @@ docker-compose.override.yml
 /server/uploads/
 /server/temp-ocr/
 /server/*.sqlite3
+/server/*.png
 
 # embed-server cache, local data
 /embed-server/data/
@@ -56,6 +57,7 @@ docker-compose.override.yml
 /client/.next/
 /client/out/
 /client/.cache/
+/client/.clerk/
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 6) Secret files and env
