@@ -1,7 +1,15 @@
 "use client";
 
 import * as React from "react";
-import { FileText, Trash2 } from "lucide-react";
+import {
+  FileText,
+  Trash2,
+  X,
+  Search,
+  ChevronDown,
+  Upload,
+  Check,
+} from "lucide-react";
 import type { Doc } from "../page";
 
 type Props = {
@@ -11,94 +19,449 @@ type Props = {
   onClearAll: () => void;
 };
 
-export default function SidebarDocs({ docs, activeId, onSelect, onClearAll }: Props) {
-  const [q, setQ] = React.useState("");
+/* --------------------------------- utils --------------------------------- */
+function normalize(v: unknown) {
+  return String(v ?? "")
+    .toLowerCase()
+    .trim();
+}
+function timeAgo(iso?: string) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  const diff = Date.now() - d.getTime();
+  const s = Math.max(1, Math.floor(diff / 1000));
+  const m = Math.floor(s / 60);
+  const h = Math.floor(m / 60);
+  const dys = Math.floor(h / 24);
+  if (dys > 7) return d.toLocaleDateString();
+  if (dys >= 1) return `${dys}d ago`;
+  if (h >= 1) return `${h}h ago`;
+  if (m >= 1) return `${m}m ago`;
+  return `${s}s ago`;
+}
+function useDebounced<T>(value: T, delay = 150) {
+  const [v, setV] = React.useState(value);
+  React.useEffect(() => {
+    const t = setTimeout(() => setV(value), delay);
+    return () => clearTimeout(t);
+  }, [value, delay]);
+  return v;
+}
 
-  const filtered = React.useMemo(() => {
-    const s = q.trim().toLowerCase();
-    if (!s) return docs;
-    return docs.filter((d) => d.name.toLowerCase().includes(s));
-  }, [docs, q]);
+/* ------------------------------- component -------------------------------- */
+export default function SidebarDocs({
+  docs,
+  activeId,
+  onSelect,
+  onClearAll,
+}: Props) {
+  const [q, setQ] = React.useState("");
+  const [statusFilter, setStatusFilter] = React.useState<
+    "all" | "ready" | "processing" | "queued" | "error"
+  >("all");
+  const [sort, setSort] = React.useState<"recent" | "alpha">("recent");
+  const [sortMenuOpen, setSortMenuOpen] = React.useState(false);
+
+  const listRef = React.useRef<HTMLUListElement | null>(null);
+  const sortBtnRef = React.useRef<HTMLButtonElement | null>(null);
+  const sortMenuRef = React.useRef<HTMLDivElement | null>(null);
+  const [highlightIdx, setHighlightIdx] = React.useState<number>(-1);
+
+  const debouncedQ = useDebounced(q, 150);
+  const deferredQ = React.useDeferredValue(debouncedQ);
+
+  const filteredSorted = React.useMemo(() => {
+    const s = normalize(deferredQ);
+
+    let result = docs.filter((d) => {
+      const matchesQ =
+        !s ||
+        normalize(d?.name).includes(s) ||
+        normalize(d?.status).includes(s);
+      const matchesStatus =
+        statusFilter === "all" ||
+        (d.status ?? "ready").toLowerCase() === statusFilter;
+      return matchesQ && matchesStatus;
+    });
+
+    if (sort === "alpha") {
+      result = [...result].sort((a, b) =>
+        (a.name || "").localeCompare(b.name || "")
+      );
+    } else {
+      result = [...result].sort((a, b) => {
+        const ad = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const bd = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        if (bd !== ad) return bd - ad;
+        return (a.name || "").localeCompare(b.name || "");
+      });
+    }
+
+    return result;
+  }, [docs, deferredQ, statusFilter, sort]);
+
+  // reset highlight when filters change
+  React.useEffect(() => setHighlightIdx(-1), [deferredQ, statusFilter, sort]);
+
+  // keyboard navigation inside list
+  React.useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const ae = document.activeElement as HTMLElement | null;
+      const typing =
+        !!ae &&
+        (ae.tagName === "INPUT" ||
+          ae.tagName === "TEXTAREA" ||
+          ae.isContentEditable);
+      if (typing) return;
+
+      if (filteredSorted.length === 0) return;
+
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setHighlightIdx((i) => Math.min(i + 1, filteredSorted.length - 1));
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setHighlightIdx((i) => Math.max(i - 1, 0));
+      } else if (e.key === "Enter" && highlightIdx >= 0) {
+        e.preventDefault();
+        const pick = filteredSorted[highlightIdx];
+        if (pick) onSelect(pick.id);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [filteredSorted, highlightIdx, onSelect]);
+
+  // keep highlighted item in view
+  React.useEffect(() => {
+    if (highlightIdx < 0) return;
+    const el = listRef.current?.querySelector<HTMLLIElement>(
+      `li[data-idx="${highlightIdx}"]`
+    );
+    el?.scrollIntoView({ block: "nearest" });
+  }, [highlightIdx]);
+
+  // open upload modal via global event (consistent with the page)
+  function tryOpenUpload() {
+    window.dispatchEvent(new CustomEvent("docchat:open-upload"));
+  }
+
+  // close sort menu on outside click / Escape
+  React.useEffect(() => {
+    if (!sortMenuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node | null;
+      if (!t) return;
+      if (sortMenuRef.current?.contains(t) || sortBtnRef.current?.contains(t)) {
+        return;
+      }
+      setSortMenuOpen(false);
+    };
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setSortMenuOpen(false);
+    };
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onEsc);
+    return () => {
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onEsc);
+    };
+  }, [sortMenuOpen]);
 
   return (
-    <div className="h-full flex flex-col">
-      <div className="p-4 border-b border-white/10">
-        <input
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder="Search documents..."
-          className="w-full px-3 py-2 rounded-lg bg-black/30 border border-white/10 text-white placeholder:text-white/50 outline-none focus:ring-2 focus:ring-white/20"
-        />
+    <div className="h-full flex flex-col backdrop-blur-xl">
+      {/* Search + sort + filters */}
+      {/* Search + sort + filters (responsive) */}
+      <div className="p-3 border-b border-white/10">
+        {/* row 1: search + sort */}
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          {/* Search (grows) */}
+          <div className="relative flex-1 min-w-0">
+            <div className="flex items-center w-full rounded-full bg-white/[0.07] border border-white/10 focus-within:ring-2 focus-within:ring-emerald-400/30 focus-within:border-emerald-300/30 transition-shadow">
+              <Search
+                size={16}
+                className="ml-3 text-white/60 pointer-events-none"
+                aria-hidden="true"
+              />
+              <input
+                type="search"
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape" && q) setQ("");
+                }}
+                placeholder="Search documents…"
+                className="doc-search-input flex-1 min-w-0 px-2 py-2 bg-transparent text-white/90 placeholder:text-white/50 outline-none truncate appearance-none"
+                aria-label="Search documents"
+              />
+              {q && (
+                <button
+                  type="button"
+                  onClick={() => setQ("")}
+                  aria-label="Clear search"
+                  className="mr-2 p-1 rounded hover:bg-white/10 flex items-center justify-center"
+                >
+                  <X size={16} className="text-white/70" />
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Sort (doesn't grow, never steals width) */}
+          <div className="relative shrink-0 self-start sm:self-auto">
+            <button
+              ref={sortBtnRef}
+              onClick={() => setSortMenuOpen((s) => !s)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full
+                   text-white/90 border border-white/10
+                   bg-white/[0.08] hover:bg-white/[0.12]
+                   backdrop-blur-md transition-colors
+                   focus:outline-none focus:ring-2 focus:ring-emerald-400/30"
+              aria-haspopup="menu"
+              aria-expanded={sortMenuOpen}
+              aria-controls="sort-menu"
+            >
+              {/* Hide label on very small screens to keep it compact */}
+              <span className="text-xs font-medium hidden xs:inline">
+                {sort === "recent" ? "Recent" : "A–Z"}
+              </span>
+              <ChevronDown
+                size={14}
+                className={`transition-transform ${sortMenuOpen ? "rotate-180" : ""}`}
+              />
+            </button>
+
+            {sortMenuOpen && (
+              <div
+                ref={sortMenuRef}
+                id="sort-menu"
+                role="menu"
+                aria-label="Sort options"
+                className="absolute right-0 mt-2 w-44 rounded-xl border border-white/10
+                     bg-neutral-800/95 text-white/90 shadow-2xl z-30"
+              >
+                <div className="px-3 pt-2 pb-1 text-[11px] uppercase tracking-wide text-white/50">
+                  Sort by
+                </div>
+                <div className="py-1">
+                  <button
+                    role="menuitemradio"
+                    aria-checked={sort === "recent"}
+                    className={[
+                      "w-full flex items-center justify-between gap-3 px-3 py-2 text-sm rounded-md transition-colors",
+                      sort === "recent"
+                        ? "bg-emerald-500/20 text-emerald-100 border border-emerald-400/30"
+                        : "text-white/85 hover:bg-black hover:text-white",
+                    ].join(" ")}
+                    onClick={() => {
+                      setSort("recent");
+                      setSortMenuOpen(false);
+                    }}
+                  >
+                    <span>Recent</span>
+                    {sort === "recent" && (
+                      <Check size={16} className="text-emerald-300" />
+                    )}
+                  </button>
+
+                  <button
+                    role="menuitemradio"
+                    aria-checked={sort === "alpha"}
+                    className={[
+                      "w-full flex items-center justify-between gap-3 px-3 py-2 text-sm rounded-md transition-colors",
+                      sort === "alpha"
+                        ? "bg-emerald-500/20 text-emerald-100 border border-emerald-400/30"
+                        : "text-white/85 hover:bg-black hover:text-white",
+                    ].join(" ")}
+                    onClick={() => {
+                      setSort("alpha");
+                      setSortMenuOpen(false);
+                    }}
+                  >
+                    <span>A–Z</span>
+                    {sort === "alpha" && (
+                      <Check size={16} className="text-emerald-300" />
+                    )}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* row 2: status chips (wrap or scroll on tiny screens) */}
+        <div className="mt-3 -mx-1 flex flex-row flex-wrap gap-2 px-1 overflow-x-auto sm:overflow-visible">
+          {(["all", "ready", "processing", "queued", "error"] as const).map(
+            (k) => (
+              <button
+                key={k}
+                onClick={() => setStatusFilter(k)}
+                className={[
+                  "inline-flex items-center gap-1 px-2.5 py-1.5 rounded-full text-xs border transition-colors whitespace-nowrap",
+                  statusFilter === k
+                    ? "bg-emerald-400/15 border-emerald-400/30 text-emerald-100"
+                    : "bg-white/5 border-white/10 text-white/70 hover:bg-white/10",
+                ].join(" ")}
+              >
+                {k[0].toUpperCase() + k.slice(1)}
+              </button>
+            )
+          )}
+        </div>
       </div>
 
+      {/* List */}
       <div className="flex-1 overflow-y-auto py-2">
-        {filtered.length === 0 ? (
-          <div className="px-4 py-8 text-center text-white/60">No documents</div>
+        {filteredSorted.length === 0 ? (
+          <div className="px-4 py-12 text-center">
+            <div className="mx-auto mb-3 inline-flex h-10 w-10 items-center justify-center rounded-xl border border-white/10 bg-white/5">
+              <FileText className="text-white/70" size={18} />
+            </div>
+            <div className="text-white/85 font-medium">No documents found</div>
+            <div className="text-white/60 text-sm mt-1">
+              Try uploading a file or adjusting your search/filter.
+            </div>
+          </div>
         ) : (
-          <ul className="px-2 space-y-1">
-            {filtered.map((doc) => (
-              <li key={doc.id}>
-                <button
-                  onClick={() => onSelect(doc.id)}
-                  className={[
-                    "w-full flex items-center gap-3 px-3 py-2 rounded-lg text-left",
-                    activeId === doc.id
-                      ? "bg-white/15 border border-white/20"
-                      : "hover:bg-white/10 border border-transparent",
-                  ].join(" ")}
-                >
-                  <FileText size={18} className="text-emerald-300 shrink-0" />
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-white text-sm">{doc.name}</p>
-                    <div className="mt-1">
+          <ul ref={listRef} className="px-2 space-y-2">
+            {filteredSorted.map((doc, i) => {
+              const isActive = activeId === doc.id;
+              const isHighlighted = highlightIdx === i;
+
+              return (
+                <li key={doc.id} data-idx={i}>
+                  <button
+                    onClick={() => onSelect(doc.id)}
+                    className={[
+                      "group w-full flex items-center gap-3 px-3 py-2 rounded-xl text-left transition-all border",
+                      isActive
+                        ? "bg-gradient-to-r from-sky-500/20 to-indigo-500/30 border border-sky-400/30 ring-1 ring-sky-400/30"
+                        : isHighlighted
+                          ? "bg-white/10 border-white/20"
+                          : "bg-white/5 hover:bg-white/8 border-white/10",
+                    ].join(" ")}
+                  >
+                    <div
+                      className={[
+                        "shrink-0 inline-flex h-7 w-7 items-center justify-center rounded-lg border",
+                        isActive
+                          ? "border-emerald-400/40 bg-emerald-400/15 text-emerald-200"
+                          : "border-white/10 bg-white/5 text-white/80",
+                      ].join(" ")}
+                    >
+                      <FileText size={16} />
+                    </div>
+
+                    <div className="min-w-0 flex-1">
+                      <p
+                        className={[
+                          "text-sm font-medium",
+                          isActive ? "text-emerald-100" : "text-white",
+                          deferredQ
+                            ? "whitespace-normal line-clamp-2"
+                            : "truncate",
+                        ].join(" ")}
+                        title={doc.name}
+                      >
+                        <Highlight
+                          text={String(doc?.name ?? "")}
+                          query={deferredQ}
+                        />
+                      </p>
+                      <p className="mt-0.5 text-[11px] text-white/60 truncate">
+                        {doc.pages
+                          ? `${doc.pages} page${doc.pages > 1 ? "s" : ""}`
+                          : "PDF"}
+                        {doc.createdAt ? ` • ${timeAgo(doc.createdAt)}` : ""}
+                      </p>
+                    </div>
+
+                    <div className="ml-auto">
                       <StatusChip status={doc.status ?? "ready"} />
                     </div>
-                  </div>
-                </button>
-              </li>
-            ))}
+                  </button>
+                </li>
+              );
+            })}
           </ul>
         )}
       </div>
 
+      {/* Footer actions */}
       <div className="p-3 border-t border-white/10">
-        <button
-          onClick={onClearAll}
-          className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-white/10 text-white/80 hover:bg-white/10"
-        >
-          <Trash2 size={16} />
-          Clear list (local)
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={tryOpenUpload}
+            className="flex-1 inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg 
+             bg-gradient-to-r from-emerald-500/90 to-emerald-600/90
+             hover:from-emerald-500 hover:to-emerald-600
+             text-white font-medium border border-emerald-400/30
+             shadow-lg shadow-emerald-500/20 transition-colors"
+            title="Upload a PDF"
+          >
+            <Upload size={16} />
+            Upload
+          </button>
+          <button
+            onClick={onClearAll}
+            className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-rose-400/30 text-rose-200 hover:bg-rose-400/10"
+            title="Clear local list"
+          >
+            <Trash2 size={16} />
+            Clear
+          </button>
+        </div>
       </div>
     </div>
   );
 }
 
-function StatusChip({ status }: { status: NonNullable<Doc["status"]> | "ready" }) {
+/* --------------------------------- sub UI --------------------------------- */
+function StatusChip({
+  status,
+}: {
+  status: NonNullable<Doc["status"]> | "ready";
+}) {
   const map: Record<string, string> = {
-    queued:
-      "bg-amber-400/15 text-amber-200 border border-amber-400/30",
-    processing:
-      "bg-blue-400/15 text-blue-200 border border-blue-400/30",
-    ready:
-      "bg-emerald-400/15 text-emerald-200 border border-emerald-400/30",
-    error:
-      "bg-rose-400/15 text-rose-200 border border-rose-400/30",
+    queued: "bg-amber-400/15 text-amber-200 border border-amber-400/30",
+    processing: "bg-sky-400/15 text-sky-200 border border-sky-400/30",
+    ready: "bg-emerald-400/15 text-emerald-200 border border-emerald-400/30",
+    error: "bg-rose-400/15 text-rose-200 border border-rose-400/30",
   };
   const label =
     status === "queued"
       ? "Queued"
       : status === "processing"
-      ? "Processing"
-      : status === "ready"
-      ? "Ready"
-      : "Error";
+        ? "Processing"
+        : status === "ready"
+          ? "Ready"
+          : "Error";
+
   return (
-    <span className={`inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full ${map[status]}`}>
+    <span
+      className={`inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full ${map[status]}`}
+    >
       <span className="leading-none">{label}</span>
       {status === "processing" && (
         <span className="ml-0.5 h-1.5 w-1.5 rounded-full bg-current animate-pulse" />
       )}
     </span>
+  );
+}
+
+function Highlight({ text, query }: { text: string; query: string }) {
+  const q = query.trim();
+  if (!q) return <>{text}</>;
+  const idx = text.toLowerCase().indexOf(q.toLowerCase());
+  if (idx === -1) return <>{text}</>;
+  const before = text.slice(0, idx);
+  const match = text.slice(idx, idx + q.length);
+  const after = text.slice(idx + q.length);
+  return (
+    <>
+      {before}
+      <mark className="bg-white/20 text-white rounded px-0.5">{match}</mark>
+      {after}
+    </>
   );
 }

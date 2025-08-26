@@ -37,4 +37,45 @@ html { scroll-behavior: smooth; }
   background: rgba(255,255,255,0.12);
   border-radius: 9999px;
 }
+
 *::-webkit-scrollbar-track { background: transparent; }
+/* Hide WebKit/Chromium search UI (the blue ❌, results button, etc.) */
+.doc-search-input::-webkit-search-cancel-button,
+.doc-search-input::-webkit-search-decoration,
+.doc-search-input::-webkit-search-results-button,
+.doc-search-input::-webkit-search-results-decoration {
+  -webkit-appearance: none;
+  appearance: none;
+  display: none !important;
+}
+
+/* Old Edge/IE */
+.doc-search-input::-ms-clear,
+.doc-search-input::-ms-reveal {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+/* Optional: fully neutralize WebKit styling so hover doesn't resurrect it */
+.doc-search-input {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+/* globals.css (or a layout-scoped CSS file) */
+.thin-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,.18) transparent;
+}
+.thin-scrollbar::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.thin-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,.18);
+  border-radius: 9999px;
+}
+.thin-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
