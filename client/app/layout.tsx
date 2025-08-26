@@ -32,50 +32,65 @@ export default function RootLayout({
       appearance={{
         baseTheme: dark,
         variables: {
-          colorPrimary: "#60a5fa", // tailwind blue-400
+          colorPrimary: "#34d399", // emerald-400
           colorText: "rgba(255,255,255,0.95)",
-          colorBackground: "transparent",
-          colorInputBackground: "rgba(0,0,0,0.3)",
+          colorBackground: "#0f1117",
+          colorInputBackground: "rgba(255,255,255,0.06)",
           colorInputText: "rgba(255,255,255,0.95)",
-          colorWarning: "#f59e0b",
-          colorDanger: "#ef4444",
-          borderRadius: "12px",
+          colorWarning: "#fbbf24", // amber-400
+          colorDanger: "#f87171", // rose-400
+          borderRadius: "0.75rem", // 12px
           fontFamily: "var(--font-geist-sans)",
         },
         elements: {
-          // outer card (SignIn, SignUp, etc.)
-          card:
-            "bg-white/5 backdrop-blur-xl border border-white/10 shadow-2xl " +
-            "text-white",
-          headerTitle: "text-white",
+          // Card / container
+          card: "bg-white/5 backdrop-blur-xl border border-white/10 shadow-2xl text-white rounded-2xl",
+          headerTitle: "text-white font-semibold",
           headerSubtitle: "text-white/70",
-          // form bits
-          formFieldLabel__text: "text-white/80",
+
+          // Form labels + inputs
+          formFieldLabel__text: "text-white/75",
           formFieldInput:
             "bg-black/30 border border-white/10 text-white placeholder:text-white/40 " +
-            "focus:ring-2 focus:ring-blue-400/40 focus:border-white/20",
+            "focus:ring-2 focus:ring-emerald-400/40 focus:border-emerald-400/30 rounded-lg",
           formFieldInput__select:
-            "bg-black/30 border border-white/10 text-white",
-          // primary button = your blue→emerald gradient
+            "bg-black/30 border border-white/10 text-white rounded-lg",
+
+          // Buttons
           formButtonPrimary:
-            "bg-gradient-to-r from-blue-500 to-emerald-400 text-black " +
-            "hover:opacity-90 shadow-lg",
-          // secondary / social buttons
-          socialButtons: "gap-3",
+            "bg-gradient-to-r from-emerald-400 to-blue-500 text-black font-medium " +
+            "hover:opacity-90 shadow-lg shadow-emerald-500/20 rounded-lg",
+          formButtonSecondary:
+            "bg-white/10 hover:bg-white/15 border border-white/10 text-white rounded-lg",
           socialButtonsBlockButton:
-            "bg-white/10 hover:bg-white/15 border border-white/10 text-white",
-          // divider
+            "bg-white/10 hover:bg-white/15 border border-white/10 text-white rounded-lg",
+          socialButtons: "gap-3",
+
+          // Divider
           dividerLine: "bg-white/10",
-          dividerText: "text-white/60",
-          // footer
+          dividerText: "text-white/60 text-xs uppercase tracking-wide",
+
+          // Footer
           footer: "text-white/60",
           footerActionText: "text-white/60",
           footerActionLink:
             "text-emerald-300 hover:text-emerald-200 transition-colors",
-          // alerts
-          alert: "bg-white/5 border border-white/10 text-white",
-          // user avatar rings inside Clerk components
+
+          // Alerts
+          alert:
+            "bg-rose-500/10 border border-rose-400/30 text-rose-200 rounded-lg px-3 py-2 text-sm",
+          alert__info:
+            "bg-emerald-500/10 border border-emerald-400/30 text-emerald-200",
+
+          // Avatars / user menu
           identityPreviewAvatarBox: "ring-2 ring-white/20",
+          userButtonAvatarBox:
+            "ring-2 ring-white/20 hover:ring-emerald-400/40 transition",
+          userButtonPopoverCard:
+            "bg-white/5 backdrop-blur-xl border border-white/10 text-white rounded-xl",
+          userButtonPopoverMain: "text-white/90",
+          userButtonPopoverActionButton:
+            "hover:bg-white/10 text-white/80 rounded-md transition-colors",
         },
       }}
     >
@@ -110,11 +125,13 @@ export default function RootLayout({
                     <SignIn
                       routing="hash"
                       appearance={{
-                        baseTheme: undefined, // using the one set on <ClerkProvider>
+                        baseTheme: undefined,
                         elements: {
-                          // Make the Clerk card fill the parent so size stays consistent
                           rootBox: "w-full",
-                          card: "w-full bg-white/5 backdrop-blur-xl border border-white/10 shadow-xl",
+                          card: "w-full bg-transparent shadow-none border-none",
+                          formButtonPrimary:
+                            "bg-gradient-to-r from-emerald-400 to-blue-500 text-black font-medium " +
+                            "hover:opacity-90 shadow-lg shadow-emerald-500/20 rounded-lg",
                         },
                       }}
                     />
