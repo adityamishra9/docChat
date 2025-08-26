@@ -138,123 +138,89 @@ async function embedLocally(texts) {
 }
 
 // Chat: { docId, message, sessionId? }
-// Chat: { docId, message, sessionId? }
-app.post("/chat", async (req, res) => {
-  const { docId, message } = req.body || {};
-  if (!docId || !message) {
-    return res.status(400).json({ error: "Missing 'docId' or 'message' in request body" });
+/* ----------------------- LLM: Gemini helper ----------------------- */
+async function generateAnswer(prompt) {
+  if (!GEMINI_API_KEY) {
+    throw new Error("GEMINI_API_KEY is not set");
   }
 
-  console.log("\n===== /chat request =====");
-  console.log("docId:", docId);
-  console.log("query:", String(message).slice(0, 200));
+  const url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent";
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-goog-api-key": GEMINI_API_KEY,
+    },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Gemini API error ${response.status}: ${errorText}`);
+  }
+
+  const data = await response.json();
+  // Return text directly
+  return (
+    data.choices?.[0]?.content?.parts?.[0]?.text ||
+    data.candidates?.[0]?.content?.parts?.[0]?.text ||
+    ""
+  );
+}
+
+/* ----------------------------- /chat ------------------------------ */
+app.post("/chat", async (req, res) => {
+  // Accept both old and new shapes
+  const docId = req.body.docId ?? null;
+  const question = (req.body.message ?? req.body.query ?? "").trim();
+  if (!question) return res.status(400).json({ error: "Missing 'message' or 'query'." });
 
   try {
-    // --- Embed query
-    console.time("embed:query");
+    // --- Vector store shim
     const shim = {
       embedQuery: async (text) => (await embedLocally([text]))[0],
       embedDocuments: async (docs) => embedLocally(docs),
     };
-    const queryVector = await shim.embedQuery(message);
-    console.timeEnd("embed:query");
-    console.log("embed:query vector dims =", Array.isArray(queryVector) ? queryVector.length : "unknown");
-
-    // --- Vector store
-    const client = new QdrantClient({ url: QDRANT_URL });
     const vectorStore = await QdrantVectorStore.fromExistingCollection(shim, {
-      client,
+      client: new QdrantClient({ url: QDRANT_URL }),
       collectionName: COLLECTION,
     });
 
-    // --- Try DOC-SCOPED search first
-    console.time("qdrant:search(doc-scoped)");
+    // --- Similarity search (doc-scoped if docId provided)
     const k = 5;
-    let resultsWithScore = await vectorStore.similaritySearchWithScore(message, k, { docId });
-    console.timeEnd("qdrant:search(doc-scoped)");
-    console.log("doc-scoped results:", resultsWithScore.length);
-
-    // If nothing returned, FALL BACK to global search (to still provide context)
-    if (!resultsWithScore.length) {
-      console.warn("⚠️ No results for docId filter. Falling back to global search. Check worker indexing of metadata.docId");
-      console.time("qdrant:search(global)");
-      resultsWithScore = await vectorStore.similaritySearchWithScore(message, k);
-      console.timeEnd("qdrant:search(global)");
-      console.log("global results:", resultsWithScore.length);
-      if (resultsWithScore.length) {
-        const meta0 = resultsWithScore[0][0].metadata;
-        console.log("global[0] meta sample:", {
-          docId: meta0?.docId,
-          page: meta0?.page,
-          name: meta0?.name,
-        });
+    let results;
+    if (docId) {
+      const filter = { must: [{ key: "docId", match: { value: String(docId) } }] };
+      results = await vectorStore.similaritySearch(question, k, filter);
+      if (!results.length) {
+        results = await vectorStore.similaritySearch(question, k);
       }
+    } else {
+      results = await vectorStore.similaritySearch(question, k);
     }
 
-    resultsWithScore.slice(0, k).forEach(([doc, score], i) => {
-      console.log(
-        `result[${i}] score=${Number(score).toFixed(4)} page=${doc.metadata?.page} docId=${doc.metadata?.docId} len=${doc.pageContent?.length ?? 0}`
-      );
-    });
+    // --- Build prompt
+    const systemPrompt =
+      `You are a helpful assistant. Answer the user's question using ONLY the provided context. ` +
+      `If the answer is not present, reply exactly: I don't know.`;
 
-    // --- Build concise context
-    const context = resultsWithScore
-      .map(([d, score], i) =>
-        `### Chunk ${i + 1} (score=${Number(score).toFixed(4)}, page=${d.metadata?.page ?? "?"}, docId=${d.metadata?.docId ?? "?"})\n${d.pageContent.slice(0, 1800)}`
-      )
-      .join("\n\n");
+    const context = results.map((d) => d.pageContent).join("\n---\n");
+    const fullPrompt = `${systemPrompt}\n\nCONTEXT:\n${context || "(no context found)"}\n\nQUESTION: ${question}`;
 
-    const prompt = [
-      "You are a helpful assistant that MUST answer using ONLY the provided context.",
-      "If the answer is not present, reply with exactly: I don't know.",
-      "",
-      "=== CONTEXT ===",
-      context || "(no context found for this query)",
-      "",
-      "=== QUESTION ===",
-      message,
-    ].join("\n");
+    // --- Call Gemini
+    const answerText = await generateAnswer(fullPrompt);
 
-    // --- LLM call (Gemini)
-    if (!GEMINI_API_KEY) {
-      console.error("FATAL: GEMINI_API_KEY missing");
-      return res.status(500).json({ error: "GEMINI_API_KEY not set on server" });
-    }
-
-    console.time("llm:gemini");
-    const url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent";
-    const llmRes = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-goog-api-key": GEMINI_API_KEY,
-      },
-      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }),
-    });
-    console.timeEnd("llm:gemini");
-
-    if (!llmRes.ok) {
-      const t = await llmRes.text();
-      console.error("Gemini HTTP error:", llmRes.status, t.slice(0, 500));
-      return res.status(502).json({ error: "Gemini error", detail: t });
-    }
-
-    const data = await llmRes.json();
-    const answer =
-      data.choices?.[0]?.content?.parts?.[0]?.text ||
-      data.candidates?.[0]?.content?.parts?.[0]?.text ||
-      "";
-
-    console.log("answer (first 200):", (answer || "").slice(0, 200));
-
+    // --- Response to frontend
     res.json({
-      answer: answer || "I don't know.",
-      sources: resultsWithScore.map(([d, score], i) => ({
+      question,
+      answer: answerText || "I don't know.",
+      sources: results.map((d, i) => ({
         id: i,
-        score,
         page: d.metadata?.page,
         docId: d.metadata?.docId,
-        text: d.pageContent.slice(0, 400),
+        text: d.pageContent,
       })),
     });
   } catch (err) {
@@ -262,6 +228,8 @@ app.post("/chat", async (req, res) => {
     res.status(500).json({ error: "Chat failed", detail: String(err?.message || err) });
   }
 });
+
+
 
 app.get("/debug/qdrant/count", async (req, res) => {
   const { docId } = req.query;
