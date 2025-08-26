@@ -1,14 +1,7 @@
 "use client";
 
 import * as React from "react";
-import {
-  CornerDownLeft,
-  Loader2,
-  BookOpen,
-  Upload,
-  Copy,
-  Info,
-} from "lucide-react";
+import { CornerDownLeft, Loader2, Copy, Info, NotebookPen, PencilLine } from "lucide-react";
 import type { Doc, Message } from "../page";
 import { Alert } from "./ui/alert"; // ⬅️ NEW: show errors at top
 
@@ -53,7 +46,15 @@ const SUGGESTIONS = [
 ];
 
 /* ------------------------------ Message Bubble ---------------------------- */
-function MessageBubble({ msg }: { msg: Message }) {
+function MessageBubble({
+  msg,
+  onCopy,
+  onEdit, // only for user messages
+}: {
+  msg: Message;
+  onCopy: (text: string) => void;
+  onEdit?: (text: string) => void;
+}) {
   const isUser = msg.role === "user";
   const time = new Date(msg.ts).toLocaleTimeString([], {
     hour: "2-digit",
@@ -62,18 +63,73 @@ function MessageBubble({ msg }: { msg: Message }) {
 
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
-      <div
-        className={`relative max-w-[80%] px-4 py-2 rounded-2xl text-sm shadow-md 
-          ${
+      <div className="max-w-[80%]">
+        {/* Bubble */}
+        <div
+          className={[
+            "relative px-4 py-2 rounded-2xl text-sm shadow-md",
             isUser
               ? "bg-gradient-to-r from-emerald-400/20 to-emerald-500/30 text-emerald-100 border border-emerald-400/30 backdrop-blur-md"
-              : "bg-gradient-to-r from-sky-500/20 to-indigo-500/30 text-white border border-white/20 backdrop-blur-md"
-          }`}
-      >
-        <p className="whitespace-pre-wrap">{msg.content}</p>
-        <span className="absolute -bottom-4 right-2 text-[10px] text-white/60">
-          {time}
-        </span>
+              : "bg-gradient-to-r from-sky-500/20 to-indigo-500/30 text-white border border-white/20 backdrop-blur-md",
+          ].join(" ")}
+        >
+          <p className="whitespace-pre-wrap">{msg.content}</p>
+        </div>
+
+        {/* Meta row: timestamp on one side, icons on the other */}
+        <div
+          className={[
+            "mt-1 flex items-center text-[11px]",
+            // for user messages: icons on right, time on left
+            // for assistant: icons on left, time on right
+            isUser
+              ? "justify-between pl-1 pr-0.5"
+              : "justify-between pl-0.5 pr-1",
+          ].join(" ")}
+        >
+          {/* Left block (assistant icons | user time) */}
+          <div className="flex items-center gap-2">
+            {isUser ? (
+              <span className="text-white/60">{time}</span>
+            ) : (
+              <>
+                <button
+                  onClick={() => onCopy(msg.content)}
+                  title="Copy"
+                  className="p-1 rounded text-white/70 hover:text-white hover:bg-white/10"
+                >
+                  <Copy size={14} />
+                </button>
+              </>
+            )}
+          </div>
+
+          {/* Right block (assistant time | user icons) */}
+          <div className="flex items-center gap-2">
+            {isUser ? (
+              <>
+                <button
+                  onClick={() => onCopy(msg.content)}
+                  title="Copy"
+                  className="p-1 rounded text-white/70 hover:text-white hover:bg-white/10"
+                >
+                  <Copy size={14} />
+                </button>
+                {onEdit && (
+                  <button
+                    onClick={() => onEdit(msg.content)}
+                    title="Edit in composer"
+                    className="p-1 rounded text-white/70 hover:text-white hover:bg-white/10"
+                  >
+                    <PencilLine size={14} />
+                  </button>
+                )}
+              </>
+            ) : (
+              <span className="text-white/60">{time}</span>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -196,6 +252,22 @@ export default function ChatWindow({ doc, messages, onSend }: Props) {
   const disabled = sending || (doc.status && doc.status !== "ready");
   const FILE_URL = `${API_BASE}/files/${encodeURIComponent(doc.id)}`;
 
+  const copyText = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {}
+  };
+
+  const editIntoComposer = (text: string) => {
+    setText(text);
+    requestAnimationFrame(() => {
+      if (!textareaRef.current) return;
+      const ta = textareaRef.current;
+      ta.focus();
+      ta.selectionStart = ta.selectionEnd = ta.value.length;
+    });
+  };
+
   return (
     <div
       className="flex flex-col h-full min-h-0 relative"
@@ -281,9 +353,10 @@ export default function ChatWindow({ doc, messages, onSend }: Props) {
                text-indigo-100 border border-indigo-400/30
                text-xs font-medium shadow-lg shadow-indigo-500/10"
           >
+            <NotebookPen size={14} />
             New chat
           </button>
-          <button
+          {/* <button
             type="button"
             disabled={!lastAssistant}
             onClick={async () =>
@@ -296,7 +369,7 @@ export default function ChatWindow({ doc, messages, onSend }: Props) {
                text-xs disabled:opacity-40"
           >
             <Copy size={14} /> Copy
-          </button>
+          </button> */}
         </div>
       </div>
 
@@ -341,7 +414,14 @@ export default function ChatWindow({ doc, messages, onSend }: Props) {
             </div>
           </div>
         ) : (
-          messages.map((m) => <MessageBubble key={m.id} msg={m} />)
+          messages.map((m) => (
+            <MessageBubble
+              key={m.id}
+              msg={m}
+              onCopy={copyText}
+              onEdit={m.role === "user" ? editIntoComposer : undefined}
+            />
+          ))
         )}
       </div>
 
@@ -351,7 +431,7 @@ export default function ChatWindow({ doc, messages, onSend }: Props) {
           {/* textarea column */}
           <div className="relative flex-1">
             <textarea
-              id="chat-input" 
+              id="chat-input"
               ref={textareaRef}
               rows={1}
               value={text}
@@ -388,7 +468,7 @@ export default function ChatWindow({ doc, messages, onSend }: Props) {
             {sending ? (
               <Loader2 size={16} className="animate-spin" />
             ) : (
-              <CornerDownLeft size={16} className="mt-1"/>
+              <CornerDownLeft size={16} className="mt-1" />
             )}
             <span>{sending ? "Sending" : "Send"}</span>
           </button>

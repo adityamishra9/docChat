@@ -45,6 +45,7 @@ docker-compose.override.yml
 # ─────────────────────────────────────────────────────────────────────────────
 # server uploads, temp files, OCR artifacts
 /server/uploads/
+/server/data/
 /server/temp-ocr/
 /server/*.sqlite3
 /server/*.png
