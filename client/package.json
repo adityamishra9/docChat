@@ -12,9 +12,14 @@
     "@clerk/nextjs": "^6.28.1",
     "@clerk/themes": "^2.4.10",
     "lucide-react": "^0.536.0",
+    "mermaid": "^11.10.1",
     "next": "15.4.5",
+    "prism-react-renderer": "^2.4.1",
     "react": "19.1.0",
-    "react-dom": "19.1.0"
+    "react-dom": "19.1.0",
+    "react-markdown": "^10.1.0",
+    "react-syntax-highlighter": "^15.6.6",
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3",

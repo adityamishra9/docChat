@@ -23,6 +23,8 @@ export type Message = {
   role: "user" | "assistant";
   content: string;
   ts: number;
+  /** when true, render a typing bubble and hide actions */
+  pending?: boolean;
 };
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
@@ -357,9 +359,8 @@ export default function AppHome() {
 
       setDocs(json || []);
 
-      // keep selection only if it still exists; otherwise clear
       setActiveId((curr) => {
-        if (!curr) return null; // don't auto-select anything
+        if (!curr) return null;
         const stillExists = (json || []).some((d) => d.id === curr);
         return stillExists ? curr : null;
       });
@@ -402,7 +403,6 @@ export default function AppHome() {
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
-      // Let the rest of the app know
       window.dispatchEvent(
         new CustomEvent("docchat:uploaded", { detail: json?.uploaded || [] })
       );
@@ -473,6 +473,15 @@ export default function AppHome() {
         [docId]: [...(prev[docId] || []), m],
       }));
 
+    const replaceMsg = (id: string, patch: Partial<Message>) =>
+      setConversations((prev) => {
+        const list = prev[docId] || [];
+        return {
+          ...prev,
+          [docId]: list.map((m) => (m.id === id ? { ...m, ...patch } : m)),
+        };
+      });
+
     const userMsg: Message = {
       id: crypto.randomUUID(),
       role: "user",
@@ -480,6 +489,16 @@ export default function AppHome() {
       ts: Date.now(),
     };
     addMsg(userMsg);
+
+    // assistant typing placeholder (renders animated dots)
+    const placeholderId = crypto.randomUUID();
+    addMsg({
+      id: placeholderId,
+      role: "assistant",
+      content: "",
+      pending: true,
+      ts: Date.now(),
+    });
 
     try {
       const res = await fetch(`${API_BASE}/chat`, {
@@ -493,9 +512,8 @@ export default function AppHome() {
       });
 
       if (!res.ok) {
-        addMsg({
-          id: crypto.randomUUID(),
-          role: "assistant",
+        replaceMsg(placeholderId, {
+          pending: false,
           content:
             "Hmm, I couldn't reach the server. Please try again in a moment.",
           ts: Date.now(),
@@ -505,16 +523,14 @@ export default function AppHome() {
       }
 
       const json = await res.json();
-      addMsg({
-        id: crypto.randomUUID(),
-        role: "assistant",
+      replaceMsg(placeholderId, {
+        pending: false,
         content: json.answer ?? "I don't have a response yet.",
         ts: Date.now(),
       });
     } catch {
-      addMsg({
-        id: crypto.randomUUID(),
-        role: "assistant",
+      replaceMsg(placeholderId, {
+        pending: false,
         content:
           "I hit a network error. Check your backend URL or internet connection.",
         ts: Date.now(),
@@ -543,16 +559,14 @@ export default function AppHome() {
     const onEnter = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
       const typing = target?.closest("input, textarea, [contenteditable=true]");
-      if (typing) return; // ignore if already typing
+      if (typing) return;
 
       if (e.key === "Enter") {
         e.preventDefault();
         const input = document.getElementById(
           "chat-input"
         ) as HTMLTextAreaElement | null;
-        if (input) {
-          input.focus();
-        }
+        input?.focus();
       }
     };
 
@@ -584,7 +598,7 @@ export default function AppHome() {
         }}
       />
 
-      {/* hidden global picker for Upload button / U key */}
+      {/* hidden global picker */}
       <input
         ref={fileInputRef}
         id="global-upload"
@@ -667,7 +681,6 @@ export default function AppHome() {
         {/* Main */}
         <main
           className="flex-1 min-w-0 h-full min-h-0 overflow-hidden flex flex-col rounded-2xl border border-white/10 bg-white/5 backdrop-blur-xl shadow-2xl"
-          /* drag & drop only when no doc selected; otherwise ChatWindow handles content */
           onDragOver={(e) => {
             if (activeDoc) return;
             e.preventDefault();
@@ -730,7 +743,6 @@ export default function AppHome() {
                   onSend={(text) => sendMessage(activeDoc.id, text)}
                 />
               ) : (
-                /* Enhanced empty state with working drag/drop + picker */
                 <div className="relative h-full w-full p-6 flex flex-col items-center justify-center text-center">
                   <div className="pointer-events-none absolute inset-0 -z-10">
                     <div
@@ -844,7 +856,7 @@ export default function AppHome() {
         </main>
       </div>
 
-      {/* Mobile layout unchanged (drawer + chat) */}
+      {/* Mobile layout */}
       <div className="lg:hidden grid lg:grid-cols-[320px_1fr] gap-4">
         <aside
           className={[

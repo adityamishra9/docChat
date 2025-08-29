@@ -1,9 +1,20 @@
 "use client";
 
 import * as React from "react";
-import { CornerDownLeft, Loader2, Copy, Info, NotebookPen, PencilLine } from "lucide-react";
+import {
+  CornerDownLeft,
+  Copy,
+  Info,
+  NotebookPen,
+  PencilLine,
+  Check,
+} from "lucide-react";
 import type { Doc, Message } from "../page";
-import { Alert } from "./ui/alert"; // ⬅️ NEW: show errors at top
+import { Alert } from "./ui/alert";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
+import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 
 /* ----------------------------- Status pill UI ----------------------------- */
 function StatusChip({
@@ -45,11 +56,107 @@ const SUGGESTIONS = [
   "Extract all dates, names, and figures.",
 ];
 
+/* ------------------------------ Typing bubble ------------------------------ */
+function TypingDots() {
+  return (
+    <span className="inline-flex items-center gap-1">
+      <span className="h-1.5 w-1.5 rounded-full bg-current animate-bounce [animation-delay:0ms]" />
+      <span className="h-1.5 w-1.5 rounded-full bg-current animate-bounce [animation-delay:120ms]" />
+      <span className="h-1.5 w-1.5 rounded-full bg-current animate-bounce [animation-delay:240ms]" />
+    </span>
+  );
+}
+
 /* ------------------------------ Message Bubble ---------------------------- */
+function MarkdownContent({ children }: { children: string }) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      // We don’t render raw HTML for safety. If you need it, add rehype-raw carefully.
+      components={{
+        h1: (p) => <h1 className="text-lg font-semibold mt-2 mb-1" {...p} />,
+        h2: (p) => <h2 className="text-base font-semibold mt-2 mb-1" {...p} />,
+        h3: (p) => <h3 className="font-semibold mt-2 mb-1" {...p} />,
+        p: (p) => <p className="leading-6 my-2" {...p} />,
+        ul: (p) => <ul className="list-disc pl-5 my-2 space-y-1" {...p} />,
+        ol: (p) => <ol className="list-decimal pl-5 my-2 space-y-1" {...p} />,
+        li: (p) => <li className="leading-6" {...p} />,
+        blockquote: (p) => (
+          <blockquote
+            className="border-l-2 border-white/20 pl-3 my-2 italic text-white/90"
+            {...p}
+          />
+        ),
+        a: ({ href, children, ...rest }) => (
+          <a
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline decoration-white/40 hover:decoration-white"
+            {...rest}
+          >
+            {children}
+          </a>
+        ),
+        table: (p) => (
+          <div className="my-3 overflow-x-auto -mx-1">
+            <table className="min-w-[480px] text-sm border-collapse" {...p} />
+          </div>
+        ),
+        thead: (p) => <thead className="bg-white/10 text-white" {...p} />,
+        th: (p) => (
+          <th className="px-3 py-2 text-left border-b border-white/10" {...p} />
+        ),
+        td: (p) => (
+          <td className="px-3 py-2 align-top border-b border-white/5" {...p} />
+        ),
+        code({ inline, className, children, ...props }: any) {
+          // DO NOT pass `inline` to the native <code> element (fixes your TS error)
+          const match = /language-(\w+)/.exec(className || "");
+          if (!inline && match) {
+            return (
+              <SyntaxHighlighter
+                {...props}
+                style={oneDark}
+                language={match[1]}
+                PreTag="div"
+                wrapLongLines
+                customStyle={{
+                  margin: "0.5rem 0",
+                  borderRadius: "0.75rem",
+                  border: "1px solid rgba(255,255,255,0.1)",
+                }}
+              >
+                {String(children).replace(/\n$/, "")}
+              </SyntaxHighlighter>
+            );
+          }
+          return (
+            <code
+              className="px-1 py-0.5 rounded bg-white/10 border border-white/10"
+              {...props}
+            >
+              {children}
+            </code>
+          );
+        },
+        pre: (p) => (
+          <pre
+            className="my-2 rounded-xl bg-black/40 border border-white/10 overflow-auto"
+            {...p}
+          />
+        ),
+      }}
+    >
+      {children}
+    </ReactMarkdown>
+  );
+}
+
 function MessageBubble({
   msg,
   onCopy,
-  onEdit, // only for user messages
+  onEdit,
 }: {
   msg: Message;
   onCopy: (text: string) => void;
@@ -60,6 +167,7 @@ function MessageBubble({
     hour: "2-digit",
     minute: "2-digit",
   });
+  const [copied, setCopied] = React.useState(false);
 
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
@@ -73,15 +181,23 @@ function MessageBubble({
               : "bg-gradient-to-r from-sky-500/20 to-indigo-500/30 text-white border border-white/20 backdrop-blur-md",
           ].join(" ")}
         >
-          <p className="whitespace-pre-wrap">{msg.content}</p>
+          {isUser ? (
+            <p className="whitespace-pre-wrap">{msg.content}</p>
+          ) : msg.pending ? (
+            <div className="text-white/80">
+              <TypingDots />
+            </div>
+          ) : (
+            <div className="prose prose-invert max-w-none prose-pre:my-0 prose-code:font-mono">
+              <MarkdownContent>{msg.content}</MarkdownContent>
+            </div>
+          )}
         </div>
 
-        {/* Meta row: timestamp on one side, icons on the other */}
+        {/* Meta row */}
         <div
           className={[
             "mt-1 flex items-center text-[11px]",
-            // for user messages: icons on right, time on left
-            // for assistant: icons on left, time on right
             isUser
               ? "justify-between pl-1 pr-0.5"
               : "justify-between pl-0.5 pr-1",
@@ -93,13 +209,20 @@ function MessageBubble({
               <span className="text-white/60">{time}</span>
             ) : (
               <>
-                <button
-                  onClick={() => onCopy(msg.content)}
-                  title="Copy"
-                  className="p-1 rounded text-white/70 hover:text-white hover:bg-white/10"
-                >
-                  <Copy size={14} />
-                </button>
+                {!msg.pending && (
+                  <button
+                    onClick={async () => {
+                      await onCopy(msg.content);
+                      setCopied(true);
+                      setTimeout(() => setCopied(false), 1200);
+                    }}
+                    title={copied ? "Copied!" : "Copy"}
+                    className="p-1 rounded text-white/70 hover:text-white hover:bg-white/10"
+                    aria-live="polite"
+                  >
+                    {copied ? <Check size={14} /> : <Copy size={14} />}
+                  </button>
+                )}
               </>
             )}
           </div>
@@ -109,11 +232,16 @@ function MessageBubble({
             {isUser ? (
               <>
                 <button
-                  onClick={() => onCopy(msg.content)}
-                  title="Copy"
+                  onClick={async () => {
+                    await onCopy(msg.content);
+                    setCopied(true);
+                    setTimeout(() => setCopied(false), 1200);
+                  }}
+                  title={copied ? "Copied!" : "Copy"}
                   className="p-1 rounded text-white/70 hover:text-white hover:bg-white/10"
+                  aria-live="polite"
                 >
-                  <Copy size={14} />
+                  {copied ? <Check size={14} /> : <Copy size={14} />}
                 </button>
                 {onEdit && (
                   <button
@@ -140,9 +268,9 @@ type Props = { doc: Doc; messages: Message[]; onSend: (text: string) => void };
 
 export default function ChatWindow({ doc, messages, onSend }: Props) {
   const [text, setText] = React.useState("");
+  // We keep `sending` just to prevent double-submit; we won’t show a button spinner.
   const [sending, setSending] = React.useState(false);
 
-  // ⬇️ NEW: drag+drop + feedback
   const [dragOver, setDragOver] = React.useState(false);
   const [errorMsg, setErrorMsg] = React.useState<string | null>(null);
   const [uploadingMsg, setUploadingMsg] = React.useState<string | null>(null);
@@ -205,7 +333,6 @@ export default function ChatWindow({ doc, messages, onSend }: Props) {
     if (!file) return;
     if (file.type !== "application/pdf") {
       setErrorMsg("We currently support PDF files only.");
-      // auto-clear after a bit
       setTimeout(() => setErrorMsg(null), 3000);
       return;
     }
@@ -222,7 +349,6 @@ export default function ChatWindow({ doc, messages, onSend }: Props) {
       const json = await res.json();
 
       setUploadingMsg(`Uploaded “${file.name}”. Processing…`);
-      // broadcast so AppHome (and others) can add immediately
       window.dispatchEvent(
         new CustomEvent("docchat:uploaded", {
           detail: json?.uploaded || [],
@@ -245,11 +371,7 @@ export default function ChatWindow({ doc, messages, onSend }: Props) {
   }
 
   /* ----------------------------- helpers/consts ---------------------------- */
-  const lastAssistant = React.useMemo(
-    () => [...messages].reverse().find((m) => m.role === "assistant"),
-    [messages]
-  );
-  const disabled = sending || (doc.status && doc.status !== "ready");
+  const disabled = (doc.status && doc.status !== "ready") || sending;
   const FILE_URL = `${API_BASE}/files/${encodeURIComponent(doc.id)}`;
 
   const copyText = async (text: string) => {
@@ -271,13 +393,11 @@ export default function ChatWindow({ doc, messages, onSend }: Props) {
   return (
     <div
       className="flex flex-col h-full min-h-0 relative"
-      // ⬇️ Drag & drop anywhere in window
       onDragOver={(e) => {
         e.preventDefault();
         setDragOver(true);
       }}
       onDragLeave={(e) => {
-        // only hide when leaving the root
         if (e.currentTarget === e.target) setDragOver(false);
       }}
       onDrop={async (e) => {
@@ -287,7 +407,7 @@ export default function ChatWindow({ doc, messages, onSend }: Props) {
         if (file) await uploadPdf(file);
       }}
     >
-      {/* Optional glass overlay while dragging */}
+      {/* Drag overlay */}
       {dragOver && (
         <div className="pointer-events-none absolute inset-0 z-10 grid place-items-center rounded-2xl bg-emerald-500/10 border-2 border-dashed border-emerald-400/50">
           <div className="text-emerald-100 text-sm">
@@ -328,16 +448,6 @@ export default function ChatWindow({ doc, messages, onSend }: Props) {
           <StatusChip status={doc.status ?? "ready"} />
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          {/* <button
-            type="button"
-            className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-white/10 text-white/80 hover:bg-white/10 text-xs"
-            onClick={() =>
-              document.dispatchEvent(new KeyboardEvent("keydown", { key: "l" }))
-            }
-            title="Open Library (L)"
-          >
-            <BookOpen size={14} /> Library
-          </button> */}
           <button
             type="button"
             onClick={() =>
@@ -356,20 +466,6 @@ export default function ChatWindow({ doc, messages, onSend }: Props) {
             <NotebookPen size={14} />
             New chat
           </button>
-          {/* <button
-            type="button"
-            disabled={!lastAssistant}
-            onClick={async () =>
-              lastAssistant &&
-              (await navigator.clipboard.writeText(lastAssistant.content))
-            }
-            title="Copy last answer"
-            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg 
-               border border-white/10 text-white/80 hover:bg-white/10 
-               text-xs disabled:opacity-40"
-          >
-            <Copy size={14} /> Copy
-          </button> */}
         </div>
       </div>
 
@@ -428,7 +524,6 @@ export default function ChatWindow({ doc, messages, onSend }: Props) {
       {/* Composer */}
       <div className="px-4 sm:px-6 py-4 border-t border-white/10 shrink-0">
         <div className="flex items-end gap-2">
-          {/* textarea column */}
           <div className="relative flex-1">
             <textarea
               id="chat-input"
@@ -457,7 +552,7 @@ export default function ChatWindow({ doc, messages, onSend }: Props) {
             />
           </div>
 
-          {/* send button */}
+          {/* send button — no spinner here; typing bubble handles “busy” */}
           <button
             onClick={() => submit()}
             disabled={disabled || !text.trim()}
@@ -465,12 +560,8 @@ export default function ChatWindow({ doc, messages, onSend }: Props) {
                  rounded-lg bg-emerald-500/90 hover:bg-emerald-500 text-black 
                  font-medium disabled:opacity-60 mb-3"
           >
-            {sending ? (
-              <Loader2 size={16} className="animate-spin" />
-            ) : (
-              <CornerDownLeft size={16} className="mt-1" />
-            )}
-            <span>{sending ? "Sending" : "Send"}</span>
+            <CornerDownLeft size={16} className="mt-1" />
+            <span>Send</span>
           </button>
         </div>
 
