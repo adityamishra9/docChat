@@ -16,6 +16,15 @@ import remarkGfm from "remark-gfm";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 
+type CodeProps = React.DetailedHTMLProps<
+  React.HTMLAttributes<HTMLElement>,
+  HTMLElement
+> & {
+  inline?: boolean;
+  className?: string;
+  children?: React.ReactNode;
+};
+
 /* ----------------------------- Status pill UI ----------------------------- */
 function StatusChip({
   status,
@@ -110,7 +119,7 @@ function MarkdownContent({ children }: { children: string }) {
         td: (p) => (
           <td className="px-3 py-2 align-top border-b border-white/5" {...p} />
         ),
-        code({ inline, className, children, ...props }: any) {
+        code({ inline, className, children, ...props }: CodeProps) {
           // DO NOT pass `inline` to the native <code> element (fixes your TS error)
           const match = /language-(\w+)/.exec(className || "");
           if (!inline && match) {

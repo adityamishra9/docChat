@@ -38,12 +38,14 @@ export default function FileUpload({ onUploaded, inputId }: Props) {
         // Expecting: { uploaded: [{ id, name, status }] }
         const json = await res.json();
         const items: Doc[] =
-          json?.uploaded?.map((u: any) => ({
-            id: u.id,
-            name: u.name ?? pdf.name,
-            status: u.status ?? "queued",
-            createdAt: new Date().toISOString(),
-          })) ?? [];
+          json?.uploaded?.map(
+            (u: { id: string; name?: string; status?: Doc["status"] }) => ({
+              id: u.id,
+              name: u.name ?? pdf.name,
+              status: u.status ?? "queued",
+              createdAt: new Date().toISOString(),
+            })
+          ) ?? [];
 
         created.push(...items);
       } catch {
@@ -75,7 +77,9 @@ export default function FileUpload({ onUploaded, inputId }: Props) {
       }}
       className={[
         "group relative rounded-xl border border-dashed p-4",
-        dragOver ? "border-emerald-400 bg-emerald-400/5" : "border-white/15 bg-white/5",
+        dragOver
+          ? "border-emerald-400 bg-emerald-400/5"
+          : "border-white/15 bg-white/5",
       ].join(" ")}
     >
       <input
@@ -98,7 +102,11 @@ export default function FileUpload({ onUploaded, inputId }: Props) {
           onClick={() => inputRef.current?.click()}
           className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-white/10 bg-white/10 hover:bg-white/20 text-white disabled:opacity-60"
         >
-          {busy ? <Loader2 className="animate-spin" size={18} /> : <Upload size={18} />}
+          {busy ? (
+            <Loader2 className="animate-spin" size={18} />
+          ) : (
+            <Upload size={18} />
+          )}
           {busy ? "Uploading..." : "Select PDFs"}
         </button>
         <span className="text-white/60 text-sm">

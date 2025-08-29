@@ -1,18 +1,24 @@
 "use client";
 
-import { XCircle, AlertTriangle, Info, CheckCircle2 } from "lucide-react";
+import {
+  XCircle,
+  AlertTriangle,
+  Info,
+  CheckCircle2,
+  type LucideIcon,
+} from "lucide-react";
 import * as React from "react";
 
 type Variant = "info" | "warning" | "error" | "success";
 
 const styles: Record<Variant, string> = {
-  info:    "bg-white/6 text-white/90 border border-white/12",
+  info: "bg-white/6 text-white/90 border border-white/12",
   warning: "bg-amber-400/10 text-amber-100 border border-amber-400/30",
-  error:   "bg-rose-400/10 text-rose-100 border border-rose-400/30",
+  error: "bg-rose-400/10 text-rose-100 border border-rose-400/30",
   success: "bg-emerald-400/10 text-emerald-100 border border-emerald-400/30",
 };
 
-const Icon: Record<Variant, React.ComponentType<any>> = {
+const Icon: Record<Variant, LucideIcon> = {
   info: Info,
   warning: AlertTriangle,
   error: XCircle,
