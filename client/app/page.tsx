@@ -22,7 +22,7 @@ export default function AppHome() {
   const router = useRouter();
   const search = useSearchParams();
   const { toasts, push } = useToasts();
-  const { isSignedIn } = useAuth();
+  const { isLoaded, isSignedIn } = useAuth();
 
   // keep a stable ref to the api instance
   const api = useApi();
@@ -31,7 +31,7 @@ export default function AppHome() {
     apiRef.current = api;
   }, [api]);
 
-  const [docs, setDocs] = React.useState<Doc[]>([]);
+  const [docs, setDocs] = React.useState<Doc[] | null>(null);
   const [loadingDocs, setLoadingDocs] = React.useState(true);
   const [errorDocs, setErrorDocs] = React.useState<string | null>(null);
 
@@ -151,13 +151,17 @@ export default function AppHome() {
   // ---------------------- fetch documents (initial/load) ----------------------
   const fetchingRef = React.useRef(false);
   const fetchDocs = React.useCallback(async () => {
+    // Wait for Clerk to hydrate before deciding signed-in vs signed-out
+    if (!isLoaded) return;
     if (fetchingRef.current) return; // prevent overlapping calls
     fetchingRef.current = true;
     try {
       setErrorDocs(null);
+      setLoadingDocs(true); // keep skeleton visible for this definitive cycle
+
       if (!isSignedIn) {
+        // Auth is loaded and user is signed out → show empty state (no flash)
         setDocs([]);
-        setLoadingDocs(false);
         return;
       }
 
@@ -188,18 +192,18 @@ export default function AppHome() {
       setLoadingDocs(false);
       fetchingRef.current = false;
     }
-  }, [isSignedIn]);
+  }, [isLoaded, isSignedIn]);
 
   React.useEffect(() => {
-    fetchDocs();
-  }, [fetchDocs]);
+    if (isLoaded) fetchDocs();
+  }, [isLoaded, fetchDocs]);
 
   // ------------------------------ SSE subscription ---------------------------
   const [sseConnected, setSseConnected] = React.useState(false);
   const backoffRef = React.useRef(2000); // for reconnects (2s → max 30s)
 
   React.useEffect(() => {
-    if (!isSignedIn) return;
+    if (!isLoaded || !isSignedIn) return;
 
     let es: EventSource | null = null;
     let canceled = false;
@@ -228,8 +232,8 @@ export default function AppHome() {
             pct?: number | null;
             stage?: string | null;
             error?: string | null;
-            pages?: number | null; // <<< added
-            createdAt?: string | null; // (not sent today, but we accept it)
+            pages?: number | null;
+            createdAt?: string | null;
           };
 
           setDocs((prev) => {
@@ -241,15 +245,14 @@ export default function AppHome() {
               return {
                 ...d,
                 status: payload.status ?? d.status,
-                // take pages/createdAt if provided by SSE
-                pages: payload.pages ?? d.pages, // <<< added
-                createdAt: payload.createdAt ?? d.createdAt, // <<< added (no-op unless sent)
+                pages: payload.pages ?? d.pages,
+                createdAt: payload.createdAt ?? d.createdAt,
               };
             });
 
             if (!found) fetchDocs(); // in case of new item from another tab
 
-            // If we just completed and still don't have pages, fetch the lightweight status endpoint once.
+            // If completed and we still don't have pages, fetch lightweight status once.
             if (
               payload.type === "completed" &&
               next.find((x) => x.id === payload.docId)?.pages == null
@@ -257,14 +260,14 @@ export default function AppHome() {
               (async () => {
                 try {
                   const s = (await apiRef.current.get(
-                    endpoints.docs.status(payload.docId) // <<< uses /documents/:id/status
+                    endpoints.docs.status(payload.docId)
                   )) as {
                     id: string;
                     status: Doc["status"];
                     pages: number | null;
                   };
                   setDocs((curr) =>
-                    curr.map((d) =>
+                    (curr ?? []).map((d) =>
                       d.id === payload.docId
                         ? {
                             ...d,
@@ -315,15 +318,15 @@ export default function AppHome() {
       const t = (scheduleReconnect as any)._t as number | undefined;
       if (t) clearTimeout(t);
     };
-  }, [isSignedIn, fetchDocs]);
+  }, [isLoaded, isSignedIn, fetchDocs]);
 
   // ----------------------- fallback poll (only if needed) ---------------------
   React.useEffect(() => {
-    if (!isSignedIn) return;
+    if (!isLoaded || !isSignedIn) return;
     if (sseConnected) return;
     const t = setInterval(fetchDocs, 60000);
     return () => clearInterval(t);
-  }, [isSignedIn, sseConnected, fetchDocs]);
+  }, [isLoaded, isSignedIn, sseConnected, fetchDocs]);
 
   // --------------------------------- uploads ---------------------------------
   const selectDoc = (id: string) => setActiveId(id);
@@ -403,7 +406,7 @@ export default function AppHome() {
       const stamped = uploaded.map((d) =>
         d.createdAt ? d : { ...d, createdAt: nowIso }
       );
-      setDocs((prev) => upsertById(prev, stamped));
+      setDocs((prev) => upsertById(prev ?? [], stamped));
       const firstId = stamped[0].id;
       setActiveId(firstId);
       updateConversations((prev) => ({ ...prev, [firstId]: [] }));
@@ -420,7 +423,7 @@ export default function AppHome() {
     function onDeleted(e: CustomEvent<{ id: string }>) {
       const id = e?.detail?.id;
       if (!id) return;
-      setDocs((prev) => prev.filter((d) => d.id !== id));
+      setDocs((prev) => (prev ?? []).filter((d) => d.id !== id));
       updateConversations((prev) => {
         const { [id]: _drop, ...rest } = prev;
         return rest as typeof prev;
@@ -509,7 +512,7 @@ export default function AppHome() {
     }
   };
 
-  const activeDoc = docs.find((d) => d.id === activeId) || null;
+  const activeDoc = docs?.find((d) => d.id === activeId) || null;
 
   // new chat event
   React.useEffect(() => {
@@ -593,7 +596,7 @@ export default function AppHome() {
       <CommandPalette
         isOpen={cmdOpen}
         onClose={() => setCmdOpen(false)}
-        docs={docs}
+        docs={docs ?? []}
         activeId={activeId}
         onSelectDoc={(id) => {
           setActiveId(id);
@@ -628,6 +631,7 @@ export default function AppHome() {
           <div className="rounded-2xl border border-white/10 bg-white/5 backdrop-blur-xl shadow-xl h-[calc(100vh-6rem)] overflow-hidden">
             <SidebarDocs
               docs={docs}
+              loading={loadingDocs || !isLoaded}
               activeId={activeId}
               onSelect={(id) => setActiveId(id)}
               onClearAll={() => {
@@ -754,6 +758,7 @@ export default function AppHome() {
             >
               <SidebarDocs
                 docs={docs}
+                loading={loadingDocs || !isLoaded}
                 activeId={activeId}
                 onSelect={(id) => {
                   setActiveId(id);

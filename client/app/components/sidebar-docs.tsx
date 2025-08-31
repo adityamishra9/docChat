@@ -10,15 +10,15 @@ import {
   Upload,
   Check,
   Loader2,
+  Star,
+  StarOff,
 } from "lucide-react";
 import type { Doc } from "@/app/types";
 import { useApi, endpoints } from "../lib/api-client";
 
 /* --------------------------------- utils --------------------------------- */
 function normalize(v: unknown) {
-  return String(v ?? "")
-    .toLowerCase()
-    .trim();
+  return String(v ?? "").toLowerCase().trim();
 }
 function timeAgo(iso?: string) {
   if (!iso) return "";
@@ -50,6 +50,56 @@ function statusRank(s?: string) {
   return 3; // error last
 }
 
+/* ---------------------------- favourites hook ---------------------------- */
+function useFavourites() {
+  const KEY = "docchat:favs";
+  const [favs, setFavs] = React.useState<Set<string>>(new Set());
+
+  // load once
+  React.useEffect(() => {
+    try {
+      const raw = localStorage.getItem(KEY);
+      if (raw) setFavs(new Set(JSON.parse(raw)));
+    } catch {}
+  }, []);
+
+  // persist
+  React.useEffect(() => {
+    try {
+      localStorage.setItem(KEY, JSON.stringify(Array.from(favs)));
+    } catch {}
+  }, [favs]);
+
+  // listen for deletions (id or '*' for all)
+  React.useEffect(() => {
+    const onDeleted = (e: any) => {
+      const id = e?.detail?.id;
+      if (!id) return;
+      if (id === "*") {
+        setFavs(new Set());
+      } else if (favs.has(id)) {
+        const next = new Set(favs);
+        next.delete(id);
+        setFavs(next);
+      }
+    };
+    window.addEventListener("docchat:doc-deleted", onDeleted as EventListener);
+    return () =>
+      window.removeEventListener("docchat:doc-deleted", onDeleted as EventListener);
+  }, [favs]);
+
+  const isFav = React.useCallback((id: string) => favs.has(id), [favs]);
+  const toggle = React.useCallback((id: string) => {
+    setFavs((prev) => {
+      const n = new Set(prev);
+      if (n.has(id)) n.delete(id);
+      else n.add(id);
+      return n;
+    });
+  }, []);
+  return { isFav, toggle, favs };
+}
+
 /* -------------------------------- skeleton -------------------------------- */
 function SkeletonList({ count = 6 }: { count?: number }) {
   return (
@@ -72,10 +122,12 @@ function SkeletonList({ count = 6 }: { count?: number }) {
 
 /* ------------------------------- component -------------------------------- */
 type Props = {
-  docs: Doc[];
+  /** now tolerant: pass undefined/null while fetching to keep skeleton up */
+  docs?: Doc[] | null;
   activeId: string | null;
   onSelect: (id: string) => void;
-  onClearAll: () => void; // clears local state (you already have this)
+  onClearAll: () => void;
+  /** still supported; if omitted, we auto-infer loading when !docs */
   loading?: boolean;
 };
 
@@ -84,13 +136,14 @@ export default function SidebarDocs({
   activeId,
   onSelect,
   onClearAll,
-  loading = false,
+  loading: loadingProp = false,
 }: Props) {
   const api = useApi();
+  const loading = loadingProp || docs == null; // keep skeleton until docs materialize
 
   const [q, setQ] = React.useState("");
   const [statusFilter, setStatusFilter] = React.useState<
-    "all" | "ready" | "processing" | "queued" | "error"
+    "all" | "favourites" | "ready" | "processing" | "queued" | "error"
   >("all");
   const [sort, setSort] = React.useState<"recent" | "alpha">("recent");
   const [sortMenuOpen, setSortMenuOpen] = React.useState(false);
@@ -133,6 +186,8 @@ export default function SidebarDocs({
   const sortMenuRef = React.useRef<HTMLDivElement | null>(null);
   const [highlightIdx, setHighlightIdx] = React.useState<number>(-1);
 
+  const { isFav, toggle: toggleFav, favs } = useFavourites();
+
   const debouncedQ = useDebounced(q, 150);
   const deferredQ = React.useDeferredValue(debouncedQ);
 
@@ -145,8 +200,11 @@ export default function SidebarDocs({
         normalize(d?.name).includes(s) ||
         normalize(d?.status).includes(s);
       const matchesStatus =
-        statusFilter === "all" ||
-        (d.status ?? "ready").toLowerCase() === statusFilter;
+        statusFilter === "all"
+          ? true
+          : statusFilter === "favourites"
+          ? isFav(d.id)
+          : (d.status ?? "ready").toLowerCase() === statusFilter;
       return matchesQ && matchesStatus;
     });
 
@@ -168,7 +226,7 @@ export default function SidebarDocs({
     }
 
     return result;
-  }, [uniqueDocs, deferredQ, statusFilter, sort]);
+  }, [uniqueDocs, deferredQ, statusFilter, sort, isFav]);
 
   React.useEffect(() => setHighlightIdx(-1), [deferredQ, statusFilter, sort]);
 
@@ -243,7 +301,7 @@ export default function SidebarDocs({
   // ----------------------------- BULK DELETE (one API call) -----------------
   const bulkDeleteAll = React.useCallback(async () => {
     if (deletingAll) return;
-    const count = (docs || []).length;
+    const count = (uniqueDocs || []).length;
     if (count === 0) return;
 
     setDeletingAll(true);
@@ -253,7 +311,7 @@ export default function SidebarDocs({
       const res = (await api.del(endpoints.docs.removeAll())) as any;
       const removed = Number(res?.deletedCount ?? 0);
 
-      // Broadcast a general wipe, in case some components are listening
+      // Broadcast a general wipe
       window.dispatchEvent(
         new CustomEvent("docchat:doc-deleted", { detail: { id: "*" } })
       );
@@ -270,7 +328,7 @@ export default function SidebarDocs({
       setDeletingAll(false);
       setConfirmOpen(false);
     }
-  }, [api, docs, deletingAll, onClearAll]);
+  }, [api, uniqueDocs, deletingAll, onClearAll]);
 
   return (
     <div className="h-full flex flex-col backdrop-blur-xl">
@@ -388,21 +446,33 @@ export default function SidebarDocs({
           </div>
         </div>
 
-        {/* row 2: status chips */}
+        {/* row 2: status + favourites chips */}
         <div className="mt-3 -mx-1 flex flex-row flex-wrap gap-2 px-1 overflow-x-auto sm:overflow-visible">
-          {(["all", "ready", "processing", "queued", "error"] as const).map(
+          {(["all", "favourites", "ready", "processing", "queued", "error"] as const).map(
             (k) => (
               <button
                 key={k}
                 onClick={() => setStatusFilter(k)}
                 className={[
-                  "inline-flex items-center gap-1 px-2.5 py-1.5 rounded-full text-xs border transition-colors whitespace-nowrap",
+                  "inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs border transition-colors whitespace-nowrap",
                   statusFilter === k
                     ? "bg-emerald-400/15 border-emerald-400/30 text-emerald-100"
                     : "bg-white/5 border-white/10 text-white/70 hover:bg-white/10",
                 ].join(" ")}
+                title={k === "favourites" ? "Show only favourite docs" : undefined}
               >
-                {k[0].toUpperCase() + k.slice(1)}
+                {k === "favourites" ? (
+                  <>
+                    <Star size={12} className="inline-block" /> Favourites
+                    {favs.size > 0 && (
+                      <span className="ml-1 rounded-full px-1.5 py-0.5 text-[10px] bg-white/10">
+                        {favs.size}
+                      </span>
+                    )}
+                  </>
+                ) : (
+                  k[0].toUpperCase() + k.slice(1)
+                )}
               </button>
             )
           )}
@@ -428,58 +498,81 @@ export default function SidebarDocs({
             {filteredSorted.map((doc, i) => {
               const isActive = activeId === doc.id;
               const isHighlighted = highlightIdx === i;
+              const fav = isFav(doc.id);
               return (
                 <li key={doc.id} data-idx={i}>
-                  <button
-                    onClick={() => onSelect(doc.id)}
+                  <div
                     className={[
                       "group w-full flex items-center gap-3 px-3 py-2 rounded-xl text-left transition-all border",
                       isActive
                         ? "bg-gradient-to-r from-sky-500/20 to-indigo-500/30 border border-sky-400/30 ring-1 ring-sky-400/30"
                         : isHighlighted
-                          ? "bg-white/10 border-white/20"
-                          : "bg-white/5 hover:bg-white/8 border-white/10",
+                        ? "bg-white/10 border-white/20"
+                        : "bg-white/5 hover:bg-white/8 border-white/10",
                     ].join(" ")}
                   >
-                    <div
-                      className={[
-                        "shrink-0 inline-flex h-7 w-7 items-center justify-center rounded-lg border",
-                        isActive
-                          ? "border-emerald-400/40 bg-emerald-400/15 text-emerald-200"
-                          : "border-white/10 bg-white/5 text-white/80",
-                      ].join(" ")}
+                    <button
+                      onClick={() => onSelect(doc.id)}
+                      className="flex-1 min-w-0 flex items-center gap-3"
+                      title={doc.name}
                     >
-                      <FileText size={16} />
-                    </div>
-
-                    <div className="min-w-0 flex-1">
-                      <p
+                      <div
                         className={[
-                          "text-sm font-medium",
-                          isActive ? "text-emerald-100" : "text-white",
-                          deferredQ
-                            ? "whitespace-normal line-clamp-2"
-                            : "truncate",
+                          "shrink-0 inline-flex h-7 w-7 items-center justify-center rounded-lg border",
+                          isActive
+                            ? "border-emerald-400/40 bg-emerald-400/15 text-emerald-200"
+                            : "border-white/10 bg-white/5 text-white/80",
                         ].join(" ")}
-                        title={doc.name}
                       >
-                        <Highlight
-                          text={String(doc?.name ?? "")}
-                          query={deferredQ}
-                        />
-                      </p>
-                      <p className="mt-0.5 text-[11px] text-white/60 truncate">
-                        {doc.pages
-                          ? `${doc.pages} page${doc.pages > 1 ? "s" : ""}`
-                          : "PDF"}
-                        {doc.createdAt ? ` • ${timeAgo(doc.createdAt)}` : ""}
-                      </p>
-                    </div>
+                        <FileText size={16} />
+                      </div>
 
-                    <div className="ml-auto">
-                      <StatusChip status={doc.status ?? "ready"} />
-                    </div>
-                  </button>
+                      <div className="min-w-0 flex-1">
+                        <p
+                          className={[
+                            "text-sm font-medium",
+                            isActive ? "text-emerald-100" : "text-white",
+                            deferredQ
+                              ? "whitespace-normal line-clamp-2"
+                              : "truncate",
+                          ].join(" ")}
+                        >
+                          <Highlight
+                            text={String(doc?.name ?? "")}
+                            query={deferredQ}
+                          />
+                        </p>
+                        <p className="mt-0.5 text-[11px] text-white/60 truncate">
+                          {doc.pages
+                            ? `${doc.pages} page${doc.pages > 1 ? "s" : ""}`
+                            : "PDF"}
+                          {doc.createdAt ? ` • ${timeAgo(doc.createdAt)}` : ""}
+                        </p>
+                      </div>
+
+                      <div className="ml-auto">
+                        <StatusChip status={doc.status ?? "ready"} />
+                      </div>
+                    </button>
+
+                    {/* favourite toggle */}
+                    <button
+                      className={[
+                        "ml-2 shrink-0 p-2 rounded-lg border transition",
+                        fav
+                          ? "border-amber-400/30 bg-amber-400/10 text-amber-200"
+                          : "border-white/10 bg-white/5 text-white/70 hover:bg-white/10",
+                      ].join(" ")}
+                      title={fav ? "Remove from favourites" : "Add to favourites"}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleFav(doc.id);
+                      }}
+                      aria-pressed={fav}
+                    >
+                      {fav ? <Star size={16} /> : <StarOff size={16} />}
+                    </button>
+                  </div>
                 </li>
               );
             })}
@@ -505,7 +598,7 @@ export default function SidebarDocs({
 
           <button
             onClick={() => setConfirmOpen(true)}
-            disabled={deletingAll || (docs?.length ?? 0) === 0}
+            disabled={deletingAll || (uniqueDocs?.length ?? 0) === 0}
             className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-rose-400/30 text-rose-200 
               hover:bg-rose-400/10 disabled:opacity-60"
             title="Permanently delete all documents"
@@ -558,8 +651,8 @@ export default function SidebarDocs({
                   </h2>
                   <p id="confirm-desc" className="text-white/70 text-sm mt-1">
                     This will permanently remove{" "}
-                    <strong>{docs?.length ?? 0}</strong> document
-                    {(docs?.length ?? 0) === 1 ? "" : "s"} and clear the chats.
+                    <strong>{uniqueDocs?.length ?? 0}</strong> document
+                    {(uniqueDocs?.length ?? 0) === 1 ? "" : "s"} and clear the chats.
                     This action cannot be undone.
                   </p>
                 </div>
@@ -629,10 +722,10 @@ function StatusChip({
     status === "queued"
       ? "Queued"
       : status === "processing"
-        ? "Processing"
-        : status === "ready"
-          ? "Ready"
-          : "Error";
+      ? "Processing"
+      : status === "ready"
+      ? "Ready"
+      : "Error";
   return (
     <span
       className={`inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full ${map[status]}`}
