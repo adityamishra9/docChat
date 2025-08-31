@@ -8,6 +8,7 @@ import {
   NotebookPen,
   PencilLine,
   Check,
+  Loader2,
 } from "lucide-react";
 import type { Doc, Message } from "../page";
 import { Alert } from "./ui/alert";
@@ -15,6 +16,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
+import { useAuth } from "@clerk/nextjs";
 
 type CodeProps = React.DetailedHTMLProps<
   React.HTMLAttributes<HTMLElement>,
@@ -65,23 +67,11 @@ const SUGGESTIONS = [
   "Extract all dates, names, and figures.",
 ];
 
-/* ------------------------------ Typing bubble ------------------------------ */
-function TypingDots() {
-  return (
-    <span className="inline-flex items-center gap-1">
-      <span className="h-1.5 w-1.5 rounded-full bg-current animate-bounce [animation-delay:0ms]" />
-      <span className="h-1.5 w-1.5 rounded-full bg-current animate-bounce [animation-delay:120ms]" />
-      <span className="h-1.5 w-1.5 rounded-full bg-current animate-bounce [animation-delay:240ms]" />
-    </span>
-  );
-}
-
 /* ------------------------------ Message Bubble ---------------------------- */
 function MarkdownContent({ children }: { children: string }) {
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
-      // We don’t render raw HTML for safety. If you need it, add rehype-raw carefully.
       components={{
         h1: (p) => <h1 className="text-lg font-semibold mt-2 mb-1" {...p} />,
         h2: (p) => <h2 className="text-base font-semibold mt-2 mb-1" {...p} />,
@@ -120,7 +110,6 @@ function MarkdownContent({ children }: { children: string }) {
           <td className="px-3 py-2 align-top border-b border-white/5" {...p} />
         ),
         code({ inline, className, children, ...props }: CodeProps) {
-          // DO NOT pass `inline` to the native <code> element (fixes your TS error)
           const match = /language-(\w+)/.exec(className || "");
           if (!inline && match) {
             return (
@@ -181,7 +170,6 @@ function MessageBubble({
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
       <div className="max-w-[80%]">
-        {/* Bubble */}
         <div
           className={[
             "relative px-4 py-2 rounded-2xl text-sm shadow-md",
@@ -194,7 +182,11 @@ function MessageBubble({
             <p className="whitespace-pre-wrap">{msg.content}</p>
           ) : msg.pending ? (
             <div className="text-white/80">
-              <TypingDots />
+              <span className="inline-flex items-center gap-1">
+                <span className="h-1.5 w-1.5 rounded-full bg-current animate-bounce [animation-delay:0ms]" />
+                <span className="h-1.5 w-1.5 rounded-full bg-current animate-bounce [animation-delay:120ms]" />
+                <span className="h-1.5 w-1.5 rounded-full bg-current animate-bounce [animation-delay:240ms]" />
+              </span>
             </div>
           ) : (
             <div className="prose prose-invert max-w-none prose-pre:my-0 prose-code:font-mono">
@@ -203,7 +195,6 @@ function MessageBubble({
           )}
         </div>
 
-        {/* Meta row */}
         <div
           className={[
             "mt-1 flex items-center text-[11px]",
@@ -212,7 +203,6 @@ function MessageBubble({
               : "justify-between pl-0.5 pr-1",
           ].join(" ")}
         >
-          {/* Left block (assistant icons | user time) */}
           <div className="flex items-center gap-2">
             {isUser ? (
               <span className="text-white/60">{time}</span>
@@ -236,7 +226,6 @@ function MessageBubble({
             )}
           </div>
 
-          {/* Right block (assistant time | user icons) */}
           <div className="flex items-center gap-2">
             {isUser ? (
               <>
@@ -273,21 +262,31 @@ function MessageBubble({
 }
 
 /* --------------------------------- Component ------------------------------ */
-type Props = { doc: Doc; messages: Message[]; onSend: (text: string) => void };
+type Props = {
+  doc: Doc;
+  messages: Message[];
+  onSend: (text: string) => void;
+  onUploaded?: (docs: Doc[]) => void;
+};
 
-export default function ChatWindow({ doc, messages, onSend }: Props) {
+export default function ChatWindow({
+  doc,
+  messages,
+  onSend,
+  onUploaded,
+}: Props) {
   const [text, setText] = React.useState("");
-  // We keep `sending` just to prevent double-submit; we won’t show a button spinner.
   const [sending, setSending] = React.useState(false);
 
-  const [dragOver, setDragOver] = React.useState(false);
   const [errorMsg, setErrorMsg] = React.useState<string | null>(null);
   const [uploadingMsg, setUploadingMsg] = React.useState<string | null>(null);
 
+  const [dragOver, setDragOver] = React.useState(false);
   const scrollerRef = React.useRef<HTMLDivElement | null>(null);
   const textareaRef = React.useRef<HTMLTextAreaElement | null>(null);
   const userIsNearBottomRef = React.useRef(true);
 
+  const { getToken, isSignedIn } = useAuth(); // ⬅️ auth available here
   const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
 
   /* ----------------------- scrolling + autosize ----------------------- */
@@ -338,36 +337,63 @@ export default function ChatWindow({ doc, messages, onSend }: Props) {
   };
 
   /* ------------------------------ upload PDF ------------------------------ */
+  const isPdf = (f: File) =>
+    f.type === "application/pdf" ||
+    f.type === "application/x-pdf" ||
+    f.type.includes("pdf") ||
+    /\.pdf$/i.test(f.name);
+
   async function uploadPdf(file: File) {
     if (!file) return;
-    if (file.type !== "application/pdf") {
+
+    if (!isPdf(file)) {
       setErrorMsg("We currently support PDF files only.");
-      setTimeout(() => setErrorMsg(null), 3000);
+      setTimeout(() => setErrorMsg(null), 2500);
       return;
     }
 
     try {
+      if (!isSignedIn) {
+        setErrorMsg("Please sign in to upload.");
+        setTimeout(() => setErrorMsg(null), 2500);
+        return;
+      }
+
       setUploadingMsg(`Uploading “${file.name}”…`);
+
       const fd = new FormData();
       fd.append("pdf", file);
+
+      const token = await getToken?.();
+      const headers = new Headers();
+      if (token) headers.set("Authorization", `Bearer ${token}`);
+
       const res = await fetch(`${API_BASE}/upload/pdf`, {
         method: "POST",
         body: fd,
+        headers,
       });
+
+      if (res.status === 401 || res.status === 403) {
+        setUploadingMsg(null);
+        setErrorMsg("Please sign in to upload.");
+        setTimeout(() => setErrorMsg(null), 2500);
+        return;
+      }
+
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
       const json = await res.json();
 
+      // Announce + bubble to the app to upsert and focus the new doc
       setUploadingMsg(`Uploaded “${file.name}”. Processing…`);
-      window.dispatchEvent(
-        new CustomEvent("docchat:uploaded", {
-          detail: json?.uploaded || [],
-        })
-      );
+      onUploaded?.(json?.uploaded || []);
     } catch (e) {
+      setUploadingMsg(null);
       setErrorMsg("Upload failed. Please try again.");
-      setTimeout(() => setErrorMsg(null), 3000);
+      setTimeout(() => setErrorMsg(null), 2500);
     } finally {
-      setTimeout(() => setUploadingMsg(null), 1500);
+      setTimeout(() => setUploadingMsg(null), 1200);
     }
   }
 
@@ -420,26 +446,31 @@ export default function ChatWindow({ doc, messages, onSend }: Props) {
       {dragOver && (
         <div className="pointer-events-none absolute inset-0 z-10 grid place-items-center rounded-2xl bg-emerald-500/10 border-2 border-dashed border-emerald-400/50">
           <div className="text-emerald-100 text-sm">
-            Drop your PDF to upload
+            {isSignedIn ? "Drop your PDF to upload" : "Sign in to upload"}
           </div>
         </div>
       )}
 
-      {/* Error / Upload banners */}
-      {errorMsg && (
-        <div className="px-4 sm:px-6 pt-3">
-          <Alert variant="error" title="Unsupported file">
-            {errorMsg}
-          </Alert>
-        </div>
-      )}
-      {uploadingMsg && (
-        <div className="px-4 sm:px-6 pt-3">
-          <Alert variant="info" title="Upload">
-            {uploadingMsg}
-          </Alert>
-        </div>
-      )}
+      {/* Floating alert stack (modern, subtle, animated) */}
+      <div className="pointer-events-none absolute top-3 right-3 z-20 space-y-2 w-[min(90vw,340px)]">
+        {errorMsg && (
+          <div className="pointer-events-auto animate-[fadeIn_.2s_ease-out]">
+            <Alert variant="error" tone="solid" title="Upload">
+              {errorMsg}
+            </Alert>
+          </div>
+        )}
+        {uploadingMsg && (
+          <div className="pointer-events-auto animate-[fadeIn_.2s_ease-out]">
+            <Alert variant="info" tone="solid" title="Upload">
+              <div className="flex items-center gap-2">
+                <Loader2 className="animate-spin" size={14} />
+                <span>{uploadingMsg}</span>
+              </div>
+            </Alert>
+          </div>
+        )}
+      </div>
 
       {/* Header */}
       <div className="px-4 sm:px-6 py-3 border-b border-white/10 flex items-center justify-between sticky top-0 bg-white/5 backdrop-blur-xl shrink-0">
@@ -561,7 +592,6 @@ export default function ChatWindow({ doc, messages, onSend }: Props) {
             />
           </div>
 
-          {/* send button — no spinner here; typing bubble handles “busy” */}
           <button
             onClick={() => submit()}
             disabled={disabled || !text.trim()}
@@ -569,8 +599,12 @@ export default function ChatWindow({ doc, messages, onSend }: Props) {
                  rounded-lg bg-emerald-500/90 hover:bg-emerald-500 text-black 
                  font-medium disabled:opacity-60 mb-3"
           >
-            <CornerDownLeft size={16} className="mt-1" />
-            <span>Send</span>
+            {sending ? (
+              <Loader2 size={16} className="animate-spin" />
+            ) : (
+              <CornerDownLeft size={16} className="mt-1" />
+            )}
+            <span>{sending ? "Sending" : "Send"}</span>
           </button>
         </div>
 

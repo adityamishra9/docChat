@@ -46,10 +46,9 @@ export default function AppHome() {
   const [loadingDocs, setLoadingDocs] = React.useState(true);
   const [errorDocs, setErrorDocs] = React.useState<string | null>(null);
 
-  const [conversations, setConversations] = useLocalStorageState<Record<string, Message[]>>(
-    "docchat:conversations",
-    {}
-  );
+  const [conversations, setConversations] = useLocalStorageState<
+    Record<string, Message[]>
+  >("docchat:conversations", {});
 
   const [activeId, setActiveId] = React.useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = React.useState(false);
@@ -69,7 +68,8 @@ export default function AppHome() {
       const raw = localStorage.getItem(SIDEBAR_W_KEY);
       if (raw) {
         const n = Number(raw);
-        if (Number.isFinite(n)) setSidebarWidth(Math.min(MAX_W, Math.max(MIN_W, n)));
+        if (Number.isFinite(n))
+          setSidebarWidth(Math.min(MAX_W, Math.max(MIN_W, n)));
       }
     } catch {}
   }, []);
@@ -87,7 +87,10 @@ export default function AppHome() {
     const onMove = (e: MouseEvent) => {
       if (!dragRef.current) return;
       const { startX, startW } = dragRef.current;
-      const next = Math.min(MAX_W, Math.max(MIN_W, startW + (e.clientX - startX)));
+      const next = Math.min(
+        MAX_W,
+        Math.max(MIN_W, startW + (e.clientX - startX))
+      );
       setSidebarWidth(next);
     };
     const onUp = () => {
@@ -128,7 +131,9 @@ export default function AppHome() {
         setLoadingDocs(false);
         return;
       }
-      const res = await authFetch(`${API_BASE}/documents`, { cache: "no-store" });
+      const res = await authFetch(`${API_BASE}/documents`, {
+        cache: "no-store",
+      });
       if (res.status === 401 || res.status === 403) {
         setErrorDocs("You’re signed out. Please sign in to view your library.");
         setDocs([]);
@@ -176,14 +181,18 @@ export default function AppHome() {
       const token = await getToken?.();
       const headers = new Headers();
       if (token) headers.set("Authorization", `Bearer ${token}`);
-      const res = await fetch(`${API_BASE}/upload/pdf`, { method: "POST", body: fd, headers });
+      const res = await fetch(`${API_BASE}/upload/pdf`, {
+        method: "POST",
+        body: fd,
+        headers,
+      });
       if (res.status === 401 || res.status === 403) {
         push("Please sign in to upload.");
         return;
       }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
-      window.dispatchEvent(new CustomEvent("docchat:uploaded", { detail: json?.uploaded || [] }));
+      onUploaded(json?.uploaded || []);
       push(`Uploaded “${file.name}”. Processing…`);
     } catch {
       push("Upload failed. Please try again.");
@@ -214,25 +223,30 @@ export default function AppHome() {
   React.useEffect(() => {
     const open = () => setShowUploadModal(true);
     window.addEventListener("docchat:open-upload", open as EventListener);
-    return () => window.removeEventListener("docchat:open-upload", open as EventListener);
+    return () =>
+      window.removeEventListener("docchat:open-upload", open as EventListener);
   }, []);
 
   // receive uploaded docs
-  const onUploaded = (uploaded: Doc[]) => {
-    setDocs((prev) => {
-      const next = [...uploaded, ...prev];
-      if (!activeId && uploaded[0]) setActiveId(uploaded[0].id);
-      return next;
-    });
-  };
-  React.useEffect(() => {
-    const onUploadedEvent = (e: Event) => {
-      const detail = (e as CustomEvent).detail as Doc[] | undefined;
-      if (detail?.length) onUploaded(detail);
-    };
-    window.addEventListener("docchat:uploaded", onUploadedEvent as EventListener);
-    return () => window.removeEventListener("docchat:uploaded", onUploadedEvent as EventListener);
-  }, []);
+  function upsertById(prev: Doc[], incoming: Doc[]) {
+    const map = new Map(prev.map((d) => [d.id, d]));
+    for (const d of incoming) {
+      const existed = map.get(d.id);
+      map.set(d.id, existed ? { ...existed, ...d } : d);
+    }
+    return Array.from(map.values());
+  }
+
+  const onUploaded = React.useCallback(
+    (uploaded: Doc[]) => {
+      if (!uploaded?.length) return;
+      setDocs((prev) => upsertById(prev, uploaded));
+      const firstId = uploaded[0].id;
+      setActiveId(firstId);
+      setConversations((prev) => ({ ...prev, [firstId]: [] }));
+    },
+    [setConversations]
+  );
 
   React.useEffect(() => {
     if (activeId) router.replace(`?doc=${encodeURIComponent(activeId)}`);
@@ -241,24 +255,45 @@ export default function AppHome() {
   // chat send
   const sendMessage = async (docId: string, content: string) => {
     const addMsg = (m: Message) =>
-      setConversations((prev) => ({ ...prev, [docId]: [...(prev[docId] || []), m] }));
+      setConversations((prev) => ({
+        ...prev,
+        [docId]: [...(prev[docId] || []), m],
+      }));
     const replaceMsg = (id: string, patch: Partial<Message>) =>
       setConversations((prev) => {
         const list = prev[docId] || [];
-        return { ...prev, [docId]: list.map((m) => (m.id === id ? { ...m, ...patch } : m)) };
+        return {
+          ...prev,
+          [docId]: list.map((m) => (m.id === id ? { ...m, ...patch } : m)),
+        };
       });
 
-    const userMsg: Message = { id: crypto.randomUUID(), role: "user", content, ts: Date.now() };
+    const userMsg: Message = {
+      id: crypto.randomUUID(),
+      role: "user",
+      content,
+      ts: Date.now(),
+    };
     addMsg(userMsg);
 
     const placeholderId = crypto.randomUUID();
-    addMsg({ id: placeholderId, role: "assistant", content: "", pending: true, ts: Date.now() });
+    addMsg({
+      id: placeholderId,
+      role: "assistant",
+      content: "",
+      pending: true,
+      ts: Date.now(),
+    });
 
     try {
       const res = await authFetch(`${API_BASE}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ docId, message: content, sessionId: `doc-${docId}` }),
+        body: JSON.stringify({
+          docId,
+          message: content,
+          sessionId: `doc-${docId}`,
+        }),
       });
 
       if (res.status === 401 || res.status === 403) {
@@ -273,7 +308,8 @@ export default function AppHome() {
       if (res.status === 409) {
         replaceMsg(placeholderId, {
           pending: false,
-          content: "This document is still processing. I’ll be ready once it’s marked ready.",
+          content:
+            "This document is still processing. I’ll be ready once it’s marked ready.",
           ts: Date.now(),
         });
         return;
@@ -281,7 +317,8 @@ export default function AppHome() {
       if (!res.ok) {
         replaceMsg(placeholderId, {
           pending: false,
-          content: "Hmm, I couldn't reach the server. Please try again in a moment.",
+          content:
+            "Hmm, I couldn't reach the server. Please try again in a moment.",
           ts: Date.now(),
         });
         push("Chat server unreachable.");
@@ -296,7 +333,8 @@ export default function AppHome() {
     } catch {
       replaceMsg(placeholderId, {
         pending: false,
-        content: "I hit a network error. Check your backend URL or internet connection.",
+        content:
+          "I hit a network error. Check your backend URL or internet connection.",
         ts: Date.now(),
       });
       push("Network error while chatting.");
@@ -312,7 +350,11 @@ export default function AppHome() {
       router.replace("/");
     }
     window.addEventListener("docchat:new-chat", onNewChat as EventListener);
-    return () => window.removeEventListener("docchat:new-chat", onNewChat as EventListener);
+    return () =>
+      window.removeEventListener(
+        "docchat:new-chat",
+        onNewChat as EventListener
+      );
   }, [router]);
 
   // focus chat with Enter (global)
@@ -322,7 +364,9 @@ export default function AppHome() {
       if (target?.closest("input, textarea, [contenteditable=true]")) return;
       if (e.key === "Enter") {
         e.preventDefault();
-        (document.getElementById("chat-input") as HTMLTextAreaElement | null)?.focus();
+        (
+          document.getElementById("chat-input") as HTMLTextAreaElement | null
+        )?.focus();
       }
     };
     window.addEventListener("keydown", onEnter);
@@ -346,7 +390,9 @@ export default function AppHome() {
               </SignInButton>
             }
           >
-            <div className="mt-1">Sign in with Clerk to view your documents, upload PDFs, and chat.</div>
+            <div className="mt-1">
+              Sign in with Clerk to view your documents, upload PDFs, and chat.
+            </div>
           </Alert>
         </div>
       </SignedOut>
@@ -358,6 +404,7 @@ export default function AppHome() {
           onUploaded(uploaded);
           setShowUploadModal(false);
         }}
+        emitGlobalEvent={false}
       />
 
       <input
@@ -427,7 +474,9 @@ export default function AppHome() {
                 <FileUpload onUploaded={onUploaded} />
               </SignedIn>
               <SignedOut>
-                <div className="text-xs text-white/60">Sign in to enable uploads.</div>
+                <div className="text-xs text-white/60">
+                  Sign in to enable uploads.
+                </div>
               </SignedOut>
             </div>
           </div>
@@ -453,7 +502,11 @@ export default function AppHome() {
           }}
           onDragLeave={() => !activeDoc && setDragOver(false)}
         >
-          {loadingDocs && <div className="p-6 animate-pulse text-white/70">Loading your library…</div>}
+          {loadingDocs && (
+            <div className="p-6 animate-pulse text-white/70">
+              Loading your library…
+            </div>
+          )}
 
           {!loadingDocs && errorDocs && (
             <div className="p-6">
@@ -479,7 +532,9 @@ export default function AppHome() {
                 }
               >
                 <div className="mt-1">
-                  {errorDocs} Ensure <code className="text-white/90">NEXT_PUBLIC_API_BASE</code> is correct.
+                  {errorDocs} Ensure{" "}
+                  <code className="text-white/90">NEXT_PUBLIC_API_BASE</code> is
+                  correct.
                 </div>
               </Alert>
             </div>
@@ -493,6 +548,7 @@ export default function AppHome() {
                   doc={activeDoc}
                   messages={conversations[activeDoc.id] || []}
                   onSend={(text) => sendMessage(activeDoc.id, text)}
+                  onUploaded={onUploaded}
                 />
               ) : (
                 <EmptyState
@@ -509,7 +565,12 @@ export default function AppHome() {
 
       {/* Mobile layout */}
       <div className="lg:hidden grid lg:grid-cols-[320px_1fr] gap-4">
-        <aside className={["fixed inset-0 lg:static lg:inset-auto", sidebarOpen ? "z-50" : "pointer-events-none -z-10"].join(" ")}>
+        <aside
+          className={[
+            "fixed inset-0 lg:static lg:inset-auto",
+            sidebarOpen ? "z-50" : "pointer-events-none -z-10",
+          ].join(" ")}
+        >
           <div className="h-full w-full">
             <div
               className={`absolute inset-0 bg-black/50 ${sidebarOpen ? "" : "hidden"}`}
@@ -542,7 +603,9 @@ export default function AppHome() {
                   <FileUpload onUploaded={onUploaded} />
                 </SignedIn>
                 <SignedOut>
-                  <div className="text-xs text-white/60">Sign in to enable uploads.</div>
+                  <div className="text-xs text-white/60">
+                    Sign in to enable uploads.
+                  </div>
                 </SignedOut>
               </div>
             </div>
@@ -556,6 +619,7 @@ export default function AppHome() {
               doc={activeDoc}
               messages={conversations[activeDoc.id] || []}
               onSend={(text) => sendMessage(activeDoc.id, text)}
+              onUploaded={onUploaded}
             />
           )}
         </main>

@@ -17,6 +17,7 @@ type Props = {
   activeId: string | null;
   onSelect: (id: string) => void;
   onClearAll: () => void;
+  loading?: boolean;
 };
 
 /* --------------------------------- utils --------------------------------- */
@@ -48,12 +49,42 @@ function useDebounced<T>(value: T, delay = 150) {
   return v;
 }
 
+// status priority: queued → processing → ready → error
+function statusRank(s?: string) {
+  const v = (s || "ready").toLowerCase();
+  if (v === "queued") return 0;
+  if (v === "processing") return 1;
+  if (v === "ready") return 2;
+  return 3; // error last
+}
+
+/* -------------------------------- skeleton -------------------------------- */
+function SkeletonList({ count = 6 }: { count?: number }) {
+  return (
+    <ul className="px-2 space-y-2" aria-hidden="true">
+      {Array.from({ length: count }).map((_, i) => (
+        <li key={i} className="animate-pulse">
+          <div className="w-full flex items-center gap-3 px-3 py-2 rounded-xl bg-white/5 border border-white/10">
+            <div className="h-7 w-7 rounded-lg bg-white/10 border border-white/10" />
+            <div className="flex-1 min-w-0">
+              <div className="h-3.5 w-2/3 bg-white/10 rounded mb-1.5" />
+              <div className="h-2.5 w-1/3 bg-white/10 rounded" />
+            </div>
+            <div className="h-5 w-16 rounded-full bg-white/10" />
+          </div>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 /* ------------------------------- component -------------------------------- */
 export default function SidebarDocs({
   docs,
   activeId,
   onSelect,
   onClearAll,
+  loading = false,
 }: Props) {
   const [q, setQ] = React.useState("");
   const [statusFilter, setStatusFilter] = React.useState<
@@ -61,6 +92,18 @@ export default function SidebarDocs({
   >("all");
   const [sort, setSort] = React.useState<"recent" | "alpha">("recent");
   const [sortMenuOpen, setSortMenuOpen] = React.useState(false);
+
+  const uniqueDocs = React.useMemo(() => {
+    const seen = new Set<string>();
+    const out: Doc[] = [];
+    for (const d of docs || []) {
+      if (!d?.id) continue;
+      if (seen.has(d.id)) continue;
+      seen.add(d.id);
+      out.push(d);
+    }
+    return out;
+  }, [docs]);
 
   const listRef = React.useRef<HTMLUListElement | null>(null);
   const sortBtnRef = React.useRef<HTMLButtonElement | null>(null);
@@ -73,7 +116,7 @@ export default function SidebarDocs({
   const filteredSorted = React.useMemo(() => {
     const s = normalize(deferredQ);
 
-    let result = docs.filter((d) => {
+    let result = uniqueDocs.filter((d) => {
       const matchesQ =
         !s ||
         normalize(d?.name).includes(s) ||
@@ -84,12 +127,18 @@ export default function SidebarDocs({
       return matchesQ && matchesStatus;
     });
 
+    // Sort with status priority first, then chosen order inside each bucket
     if (sort === "alpha") {
-      result = [...result].sort((a, b) =>
-        (a.name || "").localeCompare(b.name || "")
-      );
-    } else {
       result = [...result].sort((a, b) => {
+        const sr = statusRank(a.status) - statusRank(b.status);
+        if (sr !== 0) return sr;
+        return (a.name || "").localeCompare(b.name || "");
+      });
+    } else {
+      // recent: newer createdAt inside each status bucket
+      result = [...result].sort((a, b) => {
+        const sr = statusRank(a.status) - statusRank(b.status);
+        if (sr !== 0) return sr;
         const ad = a.createdAt ? new Date(a.createdAt).getTime() : 0;
         const bd = b.createdAt ? new Date(b.createdAt).getTime() : 0;
         if (bd !== ad) return bd - ad;
@@ -98,7 +147,7 @@ export default function SidebarDocs({
     }
 
     return result;
-  }, [docs, deferredQ, statusFilter, sort]);
+  }, [uniqueDocs, deferredQ, statusFilter, sort]);
 
   // reset highlight when filters change
   React.useEffect(() => setHighlightIdx(-1), [deferredQ, statusFilter, sort]);
@@ -141,11 +190,6 @@ export default function SidebarDocs({
     el?.scrollIntoView({ block: "nearest" });
   }, [highlightIdx]);
 
-  // open upload modal via global event (consistent with the page)
-  function tryOpenUpload() {
-    window.dispatchEvent(new CustomEvent("docchat:open-upload"));
-  }
-
   // close sort menu on outside click / Escape
   React.useEffect(() => {
     if (!sortMenuOpen) return;
@@ -168,10 +212,21 @@ export default function SidebarDocs({
     };
   }, [sortMenuOpen]);
 
+  // open upload via global hidden input if present; otherwise open the modal
+  const tryOpenUpload = React.useCallback(() => {
+    const input = document.getElementById(
+      "global-upload"
+    ) as HTMLInputElement | null;
+    if (input) {
+      input.click();
+    } else {
+      window.dispatchEvent(new CustomEvent("docchat:open-upload"));
+    }
+  }, []);
+
   return (
     <div className="h-full flex flex-col backdrop-blur-xl">
       {/* Search + sort + filters */}
-      {/* Search + sort + filters (responsive) */}
       <div className="p-3 border-b border-white/10">
         {/* row 1: search + sort */}
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
@@ -221,7 +276,6 @@ export default function SidebarDocs({
               aria-expanded={sortMenuOpen}
               aria-controls="sort-menu"
             >
-              {/* Hide label on very small screens to keep it compact */}
               <span className="text-xs font-medium hidden xs:inline">
                 {sort === "recent" ? "Recent" : "A–Z"}
               </span>
@@ -289,7 +343,7 @@ export default function SidebarDocs({
           </div>
         </div>
 
-        {/* row 2: status chips (wrap or scroll on tiny screens) */}
+        {/* row 2: status chips */}
         <div className="mt-3 -mx-1 flex flex-row flex-wrap gap-2 px-1 overflow-x-auto sm:overflow-visible">
           {(["all", "ready", "processing", "queued", "error"] as const).map(
             (k) => (
@@ -311,8 +365,10 @@ export default function SidebarDocs({
       </div>
 
       {/* List */}
-      <div className="flex-1 overflow-y-auto py-2">
-        {filteredSorted.length === 0 ? (
+      <div className="flex-1 overflow-y-auto py-2" aria-busy={loading}>
+        {loading ? (
+          <SkeletonList />
+        ) : filteredSorted.length === 0 ? (
           <div className="px-4 py-12 text-center">
             <div className="mx-auto mb-3 inline-flex h-10 w-10 items-center justify-center rounded-xl border border-white/10 bg-white/5">
               <FileText className="text-white/70" size={18} />

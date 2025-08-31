@@ -16,10 +16,9 @@ export type Doc = {
 export type UploadModalProps = {
   open: boolean;
   onClose: () => void;
-
   onSelect?: (file: File) => void | Promise<void>;
   onUploaded?: (uploaded: Doc[]) => void;
-
+  emitGlobalEvent?: boolean;
   title?: string;
   accept?: string;
   helperText?: string;
@@ -32,6 +31,7 @@ export default function UploadModal({
   onClose,
   onSelect,
   onUploaded,
+  emitGlobalEvent = false,
   title = "Upload a file",
   accept = "application/pdf",
   helperText = "Only .pdf files are supported",
@@ -51,6 +51,31 @@ export default function UploadModal({
 
   if (!open) return null;
 
+  function fileMatchesAccept(file: File, accept: string | undefined) {
+    if (!accept) return true;
+
+    // Handle common cases like "application/pdf" or "application/*"
+    // Some PDFs (esp. dragged from Finder) may have empty or generic mime;
+    // fall back to extension match.
+    const mime = (file.type || "").toLowerCase();
+    const ext = file.name.toLowerCase().split(".").pop();
+
+    const patterns = accept.split(",").map((s) => s.trim().toLowerCase());
+
+    return patterns.some((pat) => {
+      if (pat.includes("/")) {
+        // mime pattern
+        const [type, sub] = pat.split("/");
+        if (!type || !sub) return false;
+        if (sub === "*") return mime.startsWith(`${type}/`);
+        return mime === pat;
+      }
+      // extension pattern like ".pdf"
+      if (pat.startsWith(".")) return `.${ext}` === pat;
+      return false;
+    });
+  }
+
   async function handleFile(file: File) {
     if (onSelect) {
       await onSelect(file);
@@ -58,7 +83,7 @@ export default function UploadModal({
     }
     if (!onUploaded) return;
 
-    if (!file || (accept && !file.type.match(accept.replace("*", ".*")))) {
+    if (!file || (accept && !fileMatchesAccept(file, accept))) {
       setStatus(`Unsupported file type. Expected ${accept}`);
       return;
     }
@@ -72,17 +97,28 @@ export default function UploadModal({
       const token = await getToken();
       const fd = new FormData();
       fd.append("pdf", file);
+
       const res = await fetch(`${API_BASE}/upload/pdf`, {
         method: "POST",
         headers: token ? { Authorization: `Bearer ${token}` } : undefined,
         body: fd,
       });
+
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
       const uploaded: Doc[] = json?.uploaded || [];
+
       setStatus(`Uploaded “${file.name}”.`);
+
+      // Use ONE pathway to update state
       onUploaded(uploaded);
-      window.dispatchEvent(new CustomEvent("docchat:uploaded", { detail: uploaded }));
+
+      if (emitGlobalEvent) {
+        window.dispatchEvent(
+          new CustomEvent("docchat:uploaded", { detail: uploaded }),
+        );
+      }
+
       onClose();
     } catch (e) {
       setStatus("Upload failed. Please try again.");
@@ -114,7 +150,10 @@ export default function UploadModal({
 
         <div
           className="p-6"
-          onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+          onDragOver={(e) => {
+            e.preventDefault();
+            setDragOver(true);
+          }}
           onDragLeave={() => setDragOver(false)}
           onDrop={async (e) => {
             e.preventDefault();
