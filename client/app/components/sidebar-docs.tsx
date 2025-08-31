@@ -18,7 +18,9 @@ import { useApi, endpoints } from "../lib/api-client";
 
 /* --------------------------------- utils --------------------------------- */
 function normalize(v: unknown) {
-  return String(v ?? "").toLowerCase().trim();
+  return String(v ?? "")
+    .toLowerCase()
+    .trim();
 }
 function timeAgo(iso?: string) {
   if (!iso) return "";
@@ -85,7 +87,10 @@ function useFavourites() {
     };
     window.addEventListener("docchat:doc-deleted", onDeleted as EventListener);
     return () =>
-      window.removeEventListener("docchat:doc-deleted", onDeleted as EventListener);
+      window.removeEventListener(
+        "docchat:doc-deleted",
+        onDeleted as EventListener
+      );
   }, [favs]);
 
   const isFav = React.useCallback((id: string) => favs.has(id), [favs]);
@@ -194,34 +199,39 @@ export default function SidebarDocs({
   const filteredSorted = React.useMemo(() => {
     const s = normalize(deferredQ);
 
+    // 1) filter by search + status/favourites
     let result = uniqueDocs.filter((d) => {
       const matchesQ =
         !s ||
         normalize(d?.name).includes(s) ||
         normalize(d?.status).includes(s);
+
       const matchesStatus =
         statusFilter === "all"
           ? true
           : statusFilter === "favourites"
-          ? isFav(d.id)
-          : (d.status ?? "ready").toLowerCase() === statusFilter;
+            ? isFav(d.id)
+            : (d.status ?? "ready").toLowerCase() === statusFilter;
+
       return matchesQ && matchesStatus;
     });
 
+    // 2) sort without any status weighting
     if (sort === "alpha") {
-      result = [...result].sort((a, b) => {
-        const sr = statusRank(a.status) - statusRank(b.status);
-        if (sr !== 0) return sr;
-        return (a.name || "").localeCompare(b.name || "");
-      });
+      result = [...result].sort((a, b) =>
+        (a.name || "").localeCompare(b.name || "", undefined, {
+          sensitivity: "base",
+        })
+      );
     } else {
+      // "recent" — newest first by createdAt; tie-breaker name
       result = [...result].sort((a, b) => {
-        const sr = statusRank(a.status) - statusRank(b.status);
-        if (sr !== 0) return sr;
         const ad = a.createdAt ? new Date(a.createdAt).getTime() : 0;
         const bd = b.createdAt ? new Date(b.createdAt).getTime() : 0;
         if (bd !== ad) return bd - ad;
-        return (a.name || "").localeCompare(b.name || "");
+        return (a.name || "").localeCompare(b.name || "", undefined, {
+          sensitivity: "base",
+        });
       });
     }
 
@@ -448,34 +458,43 @@ export default function SidebarDocs({
 
         {/* row 2: status + favourites chips */}
         <div className="mt-3 -mx-1 flex flex-row flex-wrap gap-2 px-1 overflow-x-auto sm:overflow-visible">
-          {(["all", "favourites", "ready", "processing", "queued", "error"] as const).map(
-            (k) => (
-              <button
-                key={k}
-                onClick={() => setStatusFilter(k)}
-                className={[
-                  "inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs border transition-colors whitespace-nowrap",
-                  statusFilter === k
-                    ? "bg-emerald-400/15 border-emerald-400/30 text-emerald-100"
-                    : "bg-white/5 border-white/10 text-white/70 hover:bg-white/10",
-                ].join(" ")}
-                title={k === "favourites" ? "Show only favourite docs" : undefined}
-              >
-                {k === "favourites" ? (
-                  <>
-                    <Star size={12} className="inline-block" /> Favourites
-                    {favs.size > 0 && (
-                      <span className="ml-1 rounded-full px-1.5 py-0.5 text-[10px] bg-white/10">
-                        {favs.size}
-                      </span>
-                    )}
-                  </>
-                ) : (
-                  k[0].toUpperCase() + k.slice(1)
-                )}
-              </button>
-            )
-          )}
+          {(
+            [
+              "all",
+              "favourites",
+              "ready",
+              "processing",
+              "queued",
+              "error",
+            ] as const
+          ).map((k) => (
+            <button
+              key={k}
+              onClick={() => setStatusFilter(k)}
+              className={[
+                "inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs border transition-colors whitespace-nowrap",
+                statusFilter === k
+                  ? "bg-emerald-400/15 border-emerald-400/30 text-emerald-100"
+                  : "bg-white/5 border-white/10 text-white/70 hover:bg-white/10",
+              ].join(" ")}
+              title={
+                k === "favourites" ? "Show only favourite docs" : undefined
+              }
+            >
+              {k === "favourites" ? (
+                <>
+                  <Star size={12} className="inline-block" /> Favourites
+                  {favs.size > 0 && (
+                    <span className="ml-1 rounded-full px-1.5 py-0.5 text-[10px] bg-white/10">
+                      {favs.size}
+                    </span>
+                  )}
+                </>
+              ) : (
+                k[0].toUpperCase() + k.slice(1)
+              )}
+            </button>
+          ))}
         </div>
       </div>
 
@@ -507,8 +526,8 @@ export default function SidebarDocs({
                       isActive
                         ? "bg-gradient-to-r from-sky-500/20 to-indigo-500/30 border border-sky-400/30 ring-1 ring-sky-400/30"
                         : isHighlighted
-                        ? "bg-white/10 border-white/20"
-                        : "bg-white/5 hover:bg-white/8 border-white/10",
+                          ? "bg-white/10 border-white/20"
+                          : "bg-white/5 hover:bg-white/8 border-white/10",
                     ].join(" ")}
                   >
                     <button
@@ -563,7 +582,9 @@ export default function SidebarDocs({
                           ? "border-amber-400/30 bg-amber-400/10 text-amber-200"
                           : "border-white/10 bg-white/5 text-white/70 hover:bg-white/10",
                       ].join(" ")}
-                      title={fav ? "Remove from favourites" : "Add to favourites"}
+                      title={
+                        fav ? "Remove from favourites" : "Add to favourites"
+                      }
                       onClick={(e) => {
                         e.stopPropagation();
                         toggleFav(doc.id);
@@ -652,8 +673,8 @@ export default function SidebarDocs({
                   <p id="confirm-desc" className="text-white/70 text-sm mt-1">
                     This will permanently remove{" "}
                     <strong>{uniqueDocs?.length ?? 0}</strong> document
-                    {(uniqueDocs?.length ?? 0) === 1 ? "" : "s"} and clear the chats.
-                    This action cannot be undone.
+                    {(uniqueDocs?.length ?? 0) === 1 ? "" : "s"} and clear the
+                    chats. This action cannot be undone.
                   </p>
                 </div>
                 <button
@@ -722,10 +743,10 @@ function StatusChip({
     status === "queued"
       ? "Queued"
       : status === "processing"
-      ? "Processing"
-      : status === "ready"
-      ? "Ready"
-      : "Error";
+        ? "Processing"
+        : status === "ready"
+          ? "Ready"
+          : "Error";
   return (
     <span
       className={`inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full ${map[status]}`}

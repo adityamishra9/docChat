@@ -1,11 +1,9 @@
-// server/db.js
+// server/db/mongo.js
 import { MongoClient, GridFSBucket } from "mongodb";
+import { ENV } from "../config/env.js";
 
-const uri = process.env.MONGODB_URI || "mongodb://localhost:27018";
-
-const dbName = process.env.MONGODB_DB || "docchat";
-
-export const client = new MongoClient(uri, {});
+const client = new MongoClient(ENV.MONGODB_URI, {});
+const dbName = ENV.MONGODB_DB;
 
 export async function db() {
   if (!client.topology || !client.topology.isConnected()) {
