@@ -1,37 +1,34 @@
-name: chat-with-files
+name: docChat
 services:
   # ---------------- infra ----------------
   valkey:
-    image: valkey/valkey:latest
+    image: valkey/valkey:7
     ports: ["6379:6379"]
 
   mongo:
     image: mongo:7
     ports: ["27018:27017"]
-    volumes:
-      - mongo_data:/data/db
+    volumes: [mongo_data:/data/db]
 
   qdrant:
-    image: qdrant/qdrant:latest
+    image: qdrant/qdrant:v1.13.4
     ports: ["6333:6333"]
-    volumes:
-      - qdrant_data:/qdrant/storage
+    volumes: [qdrant_data:/qdrant/storage]
 
+  # ---------------- embedder ----------------
   embedder:
-    build:
-      context: ./embed-server
-    ports: ["8001:8000"] # container:8000 -> host:8001
+    image: adityamishra9/docchat-embedder:1
+    ports: ["8001:8000"]
     env_file: [.env]
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/healthz"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/embeddings"]
       interval: 10s
       timeout: 5s
       retries: 10
 
   # ---------------- backend API ----------------
   server:
-    build:
-      context: ./server
+    image: adityamishra9/docchat-server:1
     command: ["node", "index.js"]
     restart: unless-stopped
     env_file: [.env]
@@ -44,20 +41,14 @@ services:
       REDIS_PORT: "6379"
       QDRANT_URL: http://qdrant:6333
       EMBEDDINGS_URL: http://embedder:8000/embeddings
-      # Make sure your CORS allows the client container host OR use * in dev
-      CORS_ORIGIN: http://localhost:3000
+      CORS_ORIGIN: http://localhost:49151
       TESSDATA_PREFIX: /usr/share/tesseract-ocr/4.00/tessdata
-    depends_on:
-      - valkey
-      - mongo
-      - qdrant
-      - embedder
+    depends_on: [valkey, mongo, qdrant, embedder]
     ports: ["8000:8000"]
 
-  # ---------------- worker (shares server image) ----------------
+  # ---------------- worker ----------------
   worker:
-    build:
-      context: ./server
+    image: adityamishra9/docchat-server:1
     command: ["node", "worker.js"]
     restart: unless-stopped
     env_file: [.env]
@@ -70,26 +61,20 @@ services:
       QDRANT_URL: http://qdrant:6333
       EMBEDDINGS_URL: http://embedder:8000/embeddings
       TESSDATA_PREFIX: /usr/share/tesseract-ocr/4.00/tessdata
-    depends_on:
-      - valkey
-      - mongo
-      - qdrant
-      - embedder
+    depends_on: [valkey, mongo, qdrant, embedder]
 
   # ---------------- frontend ----------------
   client:
-    build:
-      context: ./client
+    image: adityamishra9/docchat-client:1
     restart: unless-stopped
     env_file: [.env]
     environment:
-      NEXT_PUBLIC_API_BASE: http://server:8000
+      NEXT_PUBLIC_API_BASE: http://localhost:8000
       NODE_ENV: production
-      PORT: "3000"
+      PORT: "49151"
       HOSTNAME: "0.0.0.0"
-    depends_on:
-      - server
-    ports: ["3000:3000"]
+    depends_on: [server]
+    ports: ["49151:49151"]
 
 volumes:
   mongo_data:
