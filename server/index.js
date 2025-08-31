@@ -1,4 +1,5 @@
-import "dotenv/config";
+import { fileURLToPath } from "url";
+import dotenv from "dotenv";
 import express from "express";
 import cors from "cors";
 import multer from "multer";
@@ -12,6 +13,12 @@ import { ObjectId } from "mongodb";
 import { QdrantClient } from "@qdrant/js-client-rest";
 import { QdrantVectorStore } from "@langchain/qdrant";
 import { db, bucket } from "./db.js";
+import { clerkMiddleware, getAuth } from "@clerk/express";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+dotenv.config({ path: path.resolve(__dirname, "../.env") });
 
 /* ------------------------------ ENV ------------------------------ */
 const PORT = Number(process.env.PORT || 8000);
@@ -19,25 +26,40 @@ const REDIS_HOST = process.env.REDIS_HOST || "localhost";
 const REDIS_PORT = Number(process.env.REDIS_PORT || 6379);
 const QDRANT_URL = process.env.QDRANT_URL || "http://localhost:6333";
 const EMBEDDINGS_URL = process.env.EMBEDDINGS_URL || "http://localhost:8001/embeddings";
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "AIzaSyDWYMmlGLC3FTArOY0IaRSzhUCLQpHqbyw";
-const queue = new Queue("file-upload-queue", { connection: { host: REDIS_HOST, port: REDIS_PORT } });
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
+
+const queue = new Queue("file-upload-queue", {
+  connection: { host: REDIS_HOST, port: REDIS_PORT },
+});
 
 /* ------------------------------ App ------------------------------ */
 const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Attach req.auth via Clerk
+app.use(clerkMiddleware()); // extracts session/JWT from Authorization cookie/header :contentReference[oaicite:1]{index=1}
+
+function ensureAuthed(req, res, next) {
+  const auth = getAuth(req); // { userId, ... }
+  if (!auth?.userId) return res.status(401).json({ error: "Unauthorized" });
+  next();
+}
+
+// health (public)
+app.get("/", (_req, res) => res.send("HEALTHY"));
+
 console.log("ENV →", {
-  PORT, REDIS_HOST, REDIS_PORT, QDRANT_URL,
-  EMBEDDINGS_URL, GEMINI_KEY_SET: Boolean(GEMINI_API_KEY)
+  PORT, REDIS_HOST, REDIS_PORT, QDRANT_URL, EMBEDDINGS_URL,
+  GEMINI_KEY_SET: Boolean(GEMINI_API_KEY),
 });
 
 /* --------------------------- Multer (temp) ------------------------ */
-/** write to OS temp dir, then stream into GridFS and delete */
 const upload = multer({
   storage: multer.diskStorage({
     destination: (_req, _file, cb) => cb(null, os.tmpdir()),
-    filename: (_req, file, cb) => cb(null, `${Date.now()}-${Math.round(Math.random()*1e9)}-${file.originalname}`)
+    filename: (_req, file, cb) =>
+      cb(null, `${Date.now()}-${Math.round(Math.random()*1e9)}-${file.originalname}`),
   }),
 });
 
@@ -72,14 +94,18 @@ async function generateAnswer(prompt) {
 
 /* ------------------------------ Routes --------------------------- */
 
-// health
-app.get("/", (_req, res) => res.send("OK"));
-
-// list documents (minimal fields used by your UI)
-app.get("/documents", async (_req, res) => {
+// list documents (scoped)
+app.get("/documents", ensureAuthed, async (req, res) => {
+  const { userId } = getAuth(req);
   const col = (await db()).collection("documents");
-  const docs = await col.find({}, { projection: { name:1, size:1, pages:1, status:1, createdAt:1 } })
-                        .sort({ createdAt: -1 }).toArray();
+  const docs = await col
+    .find(
+      { ownerId: userId },
+      { projection: { name:1, size:1, pages:1, status:1, createdAt:1 } }
+    )
+    .sort({ createdAt: -1 })
+    .toArray();
+
   res.json(docs.map(d => ({
     id: String(d._id),
     name: d.name,
@@ -90,14 +116,15 @@ app.get("/documents", async (_req, res) => {
   })));
 });
 
-// upload a PDF (keeps endpoint shape)
-app.post("/upload/pdf", upload.single("pdf"), async (req, res) => {
+// upload a PDF (store ownerId)
+app.post("/upload/pdf", ensureAuthed, upload.single("pdf"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "No file uploaded" });
   if (req.file.mimetype !== "application/pdf") return res.status(400).json({ error: "PDFs only" });
 
+  const { userId } = getAuth(req);
   const col = (await db()).collection("documents");
 
-  // 1) stream temp file → GridFS
+  // 1) temp → GridFS
   const gfs = await bucket();
   const gridId = new ObjectId();
   await new Promise((resolve, reject) => {
@@ -107,14 +134,15 @@ app.post("/upload/pdf", upload.single("pdf"), async (req, res) => {
       .on("error", reject);
   });
 
-  // 2) remove temp file
+  // 2) remove temp
   fs.unlink(req.file.path, () => {});
 
-  // 3) create document record (per-doc Qdrant collection)
+  // 3) DB record with ownerId + per-doc collection
   const _id = new ObjectId();
   const collection = `pdf_${String(_id)}`;
   await col.insertOne({
     _id,
+    ownerId: userId,  // 🔐 owner scoping
     name: req.file.originalname,
     size: req.file.size,
     status: "queued",
@@ -125,15 +153,16 @@ app.post("/upload/pdf", upload.single("pdf"), async (req, res) => {
   });
 
   // 4) enqueue
-  await queue.add("file-ready", { docId: String(_id) }, { removeOnComplete: 100, removeOnFail: 100 });
+  await queue.add("file-ready", { docId: String(_id), ownerId: userId }, { removeOnComplete: 100, removeOnFail: 100 });
 
   res.json({ uploaded: [{ id: String(_id), name: req.file.originalname, status: "queued" }] });
 });
 
-// stream original PDF from GridFS
-app.get("/files/:id", async (req, res) => {
+// stream original PDF (scoped)
+app.get("/files/:id", ensureAuthed, async (req, res) => {
+  const { userId } = getAuth(req);
   const col = (await db()).collection("documents");
-  const rec = await col.findOne({ _id: new ObjectId(req.params.id) });
+  const rec = await col.findOne({ _id: new ObjectId(req.params.id), ownerId: userId });
   if (!rec) return res.status(404).send("Not found");
 
   res.setHeader("Content-Type", mime.getType(rec.name) || "application/pdf");
@@ -147,14 +176,15 @@ app.get("/files/:id", async (req, res) => {
 });
 
 // chat → embed query → search that doc's collection → Gemini
-app.post("/chat", async (req, res) => {
+app.post("/chat", ensureAuthed, async (req, res) => {
+  const { userId } = getAuth(req);
   const docId = req.body.docId ?? null;
   const question = (req.body.message ?? req.body.query ?? "").trim();
   if (!docId || !question) return res.status(400).json({ error: "Missing docId or message" });
 
   try {
     const col = (await db()).collection("documents");
-    const rec = await col.findOne({ _id: new ObjectId(docId) });
+    const rec = await col.findOne({ _id: new ObjectId(docId), ownerId: userId });
     if (!rec) return res.status(404).json({ error: "Document not found" });
     if (rec.status !== "ready") return res.status(409).json({ error: "Document not ready" });
 
@@ -165,16 +195,15 @@ app.post("/chat", async (req, res) => {
 
     const vectorStore = await QdrantVectorStore.fromExistingCollection(shim, {
       client: new QdrantClient({ url: QDRANT_URL }),
-      collectionName: rec.collection, // per-PDF collection
+      collectionName: rec.collection,
     });
 
-    const k = 5;
-    const results = await vectorStore.similaritySearch(question, k);
+    const results = await vectorStore.similaritySearch(question, 5);
 
     const context = results.map(r => r.pageContent).join("\n---\n");
     const prompt =
       `You are a helpful assistant. Answer ONLY using the provided context. ` +
-      `If the answer is not present, reply as per your understanding, You can also converse with the user\n\n` +
+      `If the answer is not present, reply as per your understanding and continue the conversation.\n\n` +
       `CONTEXT:\n${context || "(no context)"}\n\nQUESTION: ${question}`;
 
     const answer = await generateAnswer(prompt);
@@ -195,8 +224,8 @@ app.post("/chat", async (req, res) => {
   }
 });
 
-// optional debug: count points in a specific collection
-app.get("/debug/qdrant/count", async (req, res) => {
+// optional debug
+app.get("/debug/qdrant/count", ensureAuthed, async (req, res) => {
   const collection = String(req.query.collection || "");
   if (!collection) return res.status(400).json({ error: "collection required" });
   try {

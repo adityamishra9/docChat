@@ -8,6 +8,7 @@ import SidebarDocs from "./components/sidebar-docs";
 import ChatWindow from "./components/chat-window";
 import { Alert } from "./components/ui/alert";
 import UploadModal from "./components/ui/upload-modal";
+import { useAuth, SignedIn, SignedOut, SignInButton } from "@clerk/nextjs";
 
 export type Doc = {
   id: string;
@@ -268,6 +269,7 @@ export default function AppHome() {
   const router = useRouter();
   const search = useSearchParams();
   const { toasts, push } = useToasts();
+  const { getToken, isSignedIn } = useAuth();
 
   const [docs, setDocs] = React.useState<Doc[]>([]);
   const [loadingDocs, setLoadingDocs] = React.useState(true);
@@ -349,11 +351,33 @@ export default function AppHome() {
     if (q) setActiveId(q);
   }, [search]);
 
+  /* ---------------------------- Auth fetch shim ---------------------------- */
+  const authFetch = React.useCallback(
+    async (url: string, init: RequestInit = {}) => {
+      const token = await getToken?.();
+      const headers = new Headers(init.headers || {});
+      if (token) headers.set("Authorization", `Bearer ${token}`);
+      // We always send JSON unless a FormData body is passed.
+      return fetch(url, { ...init, headers });
+    },
+    [getToken]
+  );
+
   // fetch docs
   const fetchDocs = React.useCallback(async () => {
     try {
       setErrorDocs(null);
-      const res = await fetch(`${API_BASE}/documents`, { cache: "no-store" });
+      if (!isSignedIn) {
+        setDocs([]);
+        setLoadingDocs(false);
+        return;
+      }
+      const res = await authFetch(`${API_BASE}/documents`, { cache: "no-store" });
+      if (res.status === 401 || res.status === 403) {
+        setErrorDocs("You’re signed out. Please sign in to view your library.");
+        setDocs([]);
+        return;
+      }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json: Doc[] = await res.json();
 
@@ -369,7 +393,7 @@ export default function AppHome() {
     } finally {
       setLoadingDocs(false);
     }
-  }, []);
+  }, [authFetch, isSignedIn]);
 
   React.useEffect(() => {
     fetchDocs();
@@ -397,22 +421,38 @@ export default function AppHome() {
     try {
       const fd = new FormData();
       fd.append("pdf", file);
+
+      const token = await getToken?.();
+      const headers = new Headers();
+      if (token) headers.set("Authorization", `Bearer ${token}`);
+
       const res = await fetch(`${API_BASE}/upload/pdf`, {
         method: "POST",
         body: fd,
+        headers,
       });
+
+      if (res.status === 401 || res.status === 403) {
+        push("Please sign in to upload.");
+        return;
+      }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
       const json = await res.json();
       window.dispatchEvent(
         new CustomEvent("docchat:uploaded", { detail: json?.uploaded || [] })
       );
       push(`Uploaded “${file.name}”. Processing…`);
-    } catch (e) {
+    } catch {
       push("Upload failed. Please try again.");
     }
   }
 
   function openFilePicker() {
+    if (!isSignedIn) {
+      push("Please sign in to upload.");
+      return;
+    }
     fileInputRef.current?.click();
   }
   const [showUploadModal, setShowUploadModal] = React.useState(false);
@@ -501,7 +541,7 @@ export default function AppHome() {
     });
 
     try {
-      const res = await fetch(`${API_BASE}/chat`, {
+      const res = await authFetch(`${API_BASE}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -510,6 +550,26 @@ export default function AppHome() {
           sessionId: `doc-${docId}`,
         }),
       });
+
+      if (res.status === 401 || res.status === 403) {
+        replaceMsg(placeholderId, {
+          pending: false,
+          content: "Please sign in to chat with this document.",
+          ts: Date.now(),
+        });
+        push("You’re signed out.");
+        return;
+      }
+
+      if (res.status === 409) {
+        replaceMsg(placeholderId, {
+          pending: false,
+          content:
+            "This document is still processing. I’ll be ready once it’s marked ready.",
+          ts: Date.now(),
+        });
+        return;
+      }
 
       if (!res.ok) {
         replaceMsg(placeholderId, {
@@ -588,6 +648,27 @@ export default function AppHome() {
         ))}
       </div>
 
+      {/* sign-in prompt (only when signed out) */}
+      <SignedOut>
+        <div className="mb-4">
+          <Alert
+            variant="warning"
+            title="You’re signed out"
+            actions={
+              <SignInButton mode="modal">
+                <button className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 border border-white/15 text-white text-sm">
+                  Sign in
+                </button>
+              </SignInButton>
+            }
+          >
+            <div className="mt-1">
+              Sign in with Clerk to view your documents, upload PDFs, and chat.
+            </div>
+          </Alert>
+        </div>
+      </SignedOut>
+
       {/* upload modal */}
       <UploadModal
         open={showUploadModal}
@@ -663,7 +744,14 @@ export default function AppHome() {
               }}
             />
             <div className="p-4 border-t border-white/10">
-              <FileUpload onUploaded={onUploaded} />
+              <SignedIn>
+                <FileUpload onUploaded={onUploaded} />
+              </SignedIn>
+              <SignedOut>
+                <div className="text-xs text-white/60">
+                  Sign in to enable uploads.
+                </div>
+              </SignedOut>
             </div>
           </div>
         </aside>
@@ -715,7 +803,7 @@ export default function AppHome() {
                       Retry
                     </button>
                     <a
-                      href="http://localhost:8000/"
+                      href={`${API_BASE}/`}
                       target="_blank"
                       className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-white/80 text-sm"
                     >
@@ -725,9 +813,9 @@ export default function AppHome() {
                 }
               >
                 <div className="mt-1">
-                  Check that your backend is running and{" "}
-                  <code className="text-white/90">NEXT_PUBLIC_API_BASE</code>{" "}
-                  points to it.
+                  {errorDocs} Ensure{" "}
+                  <code className="text-white/90">NEXT_PUBLIC_API_BASE</code> is
+                  correct.
                 </div>
               </Alert>
             </div>
@@ -892,7 +980,14 @@ export default function AppHome() {
                 }}
               />
               <div className="p-4 border-t border-white/10">
-                <FileUpload onUploaded={onUploaded} />
+                <SignedIn>
+                  <FileUpload onUploaded={onUploaded} />
+                </SignedIn>
+                <SignedOut>
+                  <div className="text-xs text-white/60">
+                    Sign in to enable uploads.
+                  </div>
+                </SignedOut>
               </div>
             </div>
           </div>

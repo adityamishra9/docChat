@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import { X, FileUp } from "lucide-react";
+import { useAuth } from "@clerk/nextjs";
 
 export type Doc = {
   id: string;
@@ -16,16 +17,12 @@ export type UploadModalProps = {
   open: boolean;
   onClose: () => void;
 
-  /** New/preferred: parent handles the upload */
   onSelect?: (file: File) => void | Promise<void>;
-
-  /** Legacy/back-compat: modal uploads to backend then calls you */
   onUploaded?: (uploaded: Doc[]) => void;
 
-  /** Optional UI bits */
   title?: string;
-  accept?: string; // e.g. "application/pdf"
-  helperText?: string; // e.g. "Only .pdf files are supported"
+  accept?: string;
+  helperText?: string;
 };
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
@@ -43,6 +40,8 @@ export default function UploadModal({
   const [status, setStatus] = React.useState<string | null>(null);
   const inputRef = React.useRef<HTMLInputElement | null>(null);
 
+  const { isLoaded, getToken } = useAuth();
+
   React.useEffect(() => {
     if (!open) return;
     const onEsc = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -53,31 +52,36 @@ export default function UploadModal({
   if (!open) return null;
 
   async function handleFile(file: File) {
-    // If parent provided onSelect, just handoff and exit
     if (onSelect) {
       await onSelect(file);
       return;
     }
-
-    // Otherwise do legacy internal upload, then notify onUploaded (if provided)
     if (!onUploaded) return;
 
     if (!file || (accept && !file.type.match(accept.replace("*", ".*")))) {
       setStatus(`Unsupported file type. Expected ${accept}`);
       return;
     }
+    if (!isLoaded) {
+      setStatus("Auth is still loading…");
+      return;
+    }
 
     try {
       setStatus(`Uploading “${file.name}”…`);
+      const token = await getToken();
       const fd = new FormData();
       fd.append("pdf", file);
-      const res = await fetch(`${API_BASE}/upload/pdf`, { method: "POST", body: fd });
+      const res = await fetch(`${API_BASE}/upload/pdf`, {
+        method: "POST",
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+        body: fd,
+      });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
       const uploaded: Doc[] = json?.uploaded || [];
       setStatus(`Uploaded “${file.name}”.`);
       onUploaded(uploaded);
-      // also broadcast for listeners (AppHome)
       window.dispatchEvent(new CustomEvent("docchat:uploaded", { detail: uploaded }));
       onClose();
     } catch (e) {
