@@ -1,29 +1,35 @@
-# -------- Base --------
 FROM node:20-bookworm-slim
 
-# System deps for OCR + rasterization
+# System deps used by PDF/OCR flow
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    curl ca-certificates \
-    tesseract-ocr tesseract-ocr-eng \
-    poppler-utils unpaper ghostscript imagemagick \
+    tesseract-ocr \
+    poppler-utils \
+    tini \
   && rm -rf /var/lib/apt/lists/*
 
-# Optional: tessdata_best (improves tiny text)
-RUN mkdir -p /usr/share/tesseract-ocr/4.00/tessdata \
-  && curl -L -o /usr/share/tesseract-ocr/4.00/tessdata/eng.traineddata \
-     https://github.com/tesseract-ocr/tessdata_best/raw/main/eng.traineddata
-
 WORKDIR /app
+ENV NODE_ENV=production
 
-# Enable pnpm if you use it
-RUN corepack enable
-
-# Install JS deps
-COPY package.json pnpm-lock.yaml* ./
-RUN pnpm install --frozen-lockfile || pnpm install
+# Install deps first for better caching
+COPY package.json package-lock.json* pnpm-lock.yaml* yarn.lock* ./
+RUN if [ -f pnpm-lock.yaml ]; then \
+      corepack enable && pnpm i --frozen-lockfile --prod=false; \
+    elif [ -f yarn.lock ]; then \
+      corepack enable && yarn --frozen-lockfile; \
+    else \
+      npm ci; \
+    fi
 
 # Copy source
 COPY . .
 
-# Default command runs the API; docker-compose overrides for worker
+# Build (if your server has TS or build steps—safe to no-op if not)
+RUN npm run build || echo "No build step, continuing."
+
+EXPOSE 8000
+
+# Use tini for proper PID 1 signaling
+ENTRYPOINT ["/usr/bin/tini", "--"]
+
+# Command is provided by docker-compose (index.js or worker.js)
 CMD ["node", "index.js"]
