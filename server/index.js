@@ -659,12 +659,12 @@ app.post("/chat/:docId", ensureAuthed, async (req, res) => {
     res.json({
       question,
       answer: answer || "I don't know.",
-      sources: results.map((d, i) => ({
-        id: i,
-        page: d.metadata?.page,
-        docId,
-        text: d.pageContent,
-      })),
+      // sources: results.map((d, i) => ({
+      //   id: i,
+      //   page: d.metadata?.page,
+      //   docId,
+      //   text: d.pageContent,
+      // })),
     });
   } catch (err) {
     console.error("Chat failed:", err);

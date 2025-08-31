@@ -145,7 +145,7 @@ export default function RootLayout({
             <header className="sticky top-0 z-40 backdrop-blur-xl supports-[backdrop-filter]:bg-white/5 bg-black/10 border-b border-white/10">
               <nav className="max-w-7xl mx-auto px-4 h-14 flex items-center justify-between">
                 <div className="flex items-center gap-2">
-                  <div className="h-8 w-8 rounded-xl bg-gradient-to-br from-blue-500 to-emerald-400" />
+                  <div className="h-8 w-8 rounded-xl bg-gradient-to-br from-blue-500 via-emerald-400 to-rose-500" />
                   <span className="text-white font-medium tracking-tight">
                     DocChat
                   </span>

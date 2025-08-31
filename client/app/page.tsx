@@ -35,9 +35,57 @@ export default function AppHome() {
   const [loadingDocs, setLoadingDocs] = React.useState(true);
   const [errorDocs, setErrorDocs] = React.useState<string | null>(null);
 
-  const [conversations, setConversations] = useLocalStorageState<
+  // -------------------- Conversations: live (UI) + persisted (storage) --------------------
+  // LocalStorage copy (what gets written to disk)
+  const [persistedConversations, setPersistedConversations] =
+    useLocalStorageState<Record<string, Message[]>>(
+      "docchat:conversations",
+      {}
+    );
+
+  // Live copy (what the UI renders — can include pending bubbles)
+  const [liveConversations, setLiveConversations] = React.useState<
     Record<string, Message[]>
-  >("docchat:conversations", {});
+  >(persistedConversations);
+
+  const PENDING_FALLBACK =
+    "Looks like the connection dropped while I was answering. Please resend your last question.";
+
+  // Map any pending assistant message to a non-pending fallback (for persistence only)
+  function mapForPersistence(obj: Record<string, Message[]>) {
+    const out: Record<string, Message[]> = {};
+    for (const [docId, list] of Object.entries(obj)) {
+      out[docId] = (list || []).map((m) =>
+        m.role === "assistant" && (m as any).pending
+          ? { ...m, pending: false, content: PENDING_FALLBACK }
+          : m
+      );
+    }
+    return out;
+  }
+
+  // Unified updater: updates live (UI) and writes a safe, mapped copy to storage
+  function updateConversations(
+    updater: (prev: Record<string, Message[]>) => Record<string, Message[]>
+  ) {
+    setLiveConversations((prev) => {
+      const next = updater(prev);
+      try {
+        setPersistedConversations(mapForPersistence(next));
+      } catch {
+        /* ignore storage errors */
+      }
+      return next;
+    });
+  }
+
+  // Keep a minimal sync from storage -> live on first mount (optional safety)
+  React.useEffect(() => {
+    setLiveConversations((prev) =>
+      Object.keys(prev).length ? prev : persistedConversations
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const [activeId, setActiveId] = React.useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = React.useState(false);
@@ -120,10 +168,10 @@ export default function AppHome() {
       // normalize to array (supports multiple shapes)
       const list: Doc[] = Array.isArray(raw)
         ? raw
-        : (raw?.items as Doc[]) ??
+        : ((raw?.items as Doc[]) ??
           (raw?.documents as Doc[]) ??
           (raw?.data as Doc[]) ??
-          [];
+          []);
 
       setDocs(list);
       setActiveId((curr) => {
@@ -204,17 +252,25 @@ export default function AppHome() {
             // If we just completed and still don't have pages, fetch the lightweight status endpoint once.
             if (
               payload.type === "completed" &&
-              (next.find((x) => x.id === payload.docId)?.pages == null)
+              next.find((x) => x.id === payload.docId)?.pages == null
             ) {
               (async () => {
                 try {
                   const s = (await apiRef.current.get(
                     endpoints.docs.status(payload.docId) // <<< uses /documents/:id/status
-                  )) as { id: string; status: Doc["status"]; pages: number | null };
+                  )) as {
+                    id: string;
+                    status: Doc["status"];
+                    pages: number | null;
+                  };
                   setDocs((curr) =>
                     curr.map((d) =>
                       d.id === payload.docId
-                        ? { ...d, status: s.status ?? d.status, pages: s.pages ?? d.pages }
+                        ? {
+                            ...d,
+                            status: s.status ?? d.status,
+                            pages: s.pages ?? d.pages,
+                          }
                         : d
                     )
                   );
@@ -342,7 +398,7 @@ export default function AppHome() {
   const onUploaded = React.useCallback(
     (uploaded: Doc[]) => {
       if (!uploaded?.length) return;
-      // give new items a createdAt immediately so "x min ago" renders  // <<< added
+      // give new items a createdAt immediately so "x min ago" renders
       const nowIso = new Date().toISOString();
       const stamped = uploaded.map((d) =>
         d.createdAt ? d : { ...d, createdAt: nowIso }
@@ -350,9 +406,9 @@ export default function AppHome() {
       setDocs((prev) => upsertById(prev, stamped));
       const firstId = stamped[0].id;
       setActiveId(firstId);
-      setConversations((prev) => ({ ...prev, [firstId]: [] }));
+      updateConversations((prev) => ({ ...prev, [firstId]: [] }));
     },
-    [setConversations]
+    [] // updateConversations is stable in this component scope
   );
 
   React.useEffect(() => {
@@ -365,7 +421,7 @@ export default function AppHome() {
       const id = e?.detail?.id;
       if (!id) return;
       setDocs((prev) => prev.filter((d) => d.id !== id));
-      setConversations((prev) => {
+      updateConversations((prev) => {
         const { [id]: _drop, ...rest } = prev;
         return rest as typeof prev;
       });
@@ -383,12 +439,13 @@ export default function AppHome() {
   // chat send
   const sendMessage = async (docId: string, content: string) => {
     const addMsg = (m: Message) =>
-      setConversations((prev) => ({
+      updateConversations((prev) => ({
         ...prev,
         [docId]: [...(prev[docId] || []), m],
       }));
+
     const replaceMsg = (id: string, patch: Partial<Message>) =>
-      setConversations((prev) => {
+      updateConversations((prev) => {
         const list = prev[docId] || [];
         return {
           ...prev,
@@ -576,7 +633,7 @@ export default function AppHome() {
               onClearAll={() => {
                 setDocs([]);
                 setActiveId(null);
-                setConversations({});
+                updateConversations(() => ({}));
                 router.replace(`/`);
               }}
             />
@@ -657,7 +714,7 @@ export default function AppHome() {
                 <ChatWindow
                   key={activeDoc.id}
                   doc={activeDoc}
-                  messages={conversations[activeDoc.id] || []}
+                  messages={liveConversations[activeDoc.id] || []}
                   onSend={(text) => sendMessage(activeDoc.id, text)}
                   onUploaded={onUploaded}
                 />
@@ -705,7 +762,7 @@ export default function AppHome() {
                 onClearAll={() => {
                   setDocs([]);
                   setActiveId(null);
-                  setConversations({});
+                  updateConversations(() => ({}));
                   router.replace(``);
                 }}
               />
@@ -728,7 +785,7 @@ export default function AppHome() {
             <ChatWindow
               key={activeDoc.id}
               doc={activeDoc}
-              messages={conversations[activeDoc.id] || []}
+              messages={liveConversations[activeDoc.id] || []}
               onSend={(text) => sendMessage(activeDoc.id, text)}
               onUploaded={onUploaded}
             />
