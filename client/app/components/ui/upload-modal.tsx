@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { X, FileUp } from "lucide-react";
-import { useAuth } from "@clerk/nextjs";
+import { useApi, endpoints } from "../../lib/api-client";
 
 export type Doc = {
   id: string;
@@ -24,8 +24,6 @@ export type UploadModalProps = {
   helperText?: string;
 };
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
-
 export default function UploadModal({
   open,
   onClose,
@@ -40,7 +38,7 @@ export default function UploadModal({
   const [status, setStatus] = React.useState<string | null>(null);
   const inputRef = React.useRef<HTMLInputElement | null>(null);
 
-  const { isLoaded, getToken } = useAuth();
+  const api = useApi();
 
   React.useEffect(() => {
     if (!open) return;
@@ -54,23 +52,17 @@ export default function UploadModal({
   function fileMatchesAccept(file: File, accept: string | undefined) {
     if (!accept) return true;
 
-    // Handle common cases like "application/pdf" or "application/*"
-    // Some PDFs (esp. dragged from Finder) may have empty or generic mime;
-    // fall back to extension match.
     const mime = (file.type || "").toLowerCase();
     const ext = file.name.toLowerCase().split(".").pop();
-
     const patterns = accept.split(",").map((s) => s.trim().toLowerCase());
 
     return patterns.some((pat) => {
       if (pat.includes("/")) {
-        // mime pattern
         const [type, sub] = pat.split("/");
         if (!type || !sub) return false;
         if (sub === "*") return mime.startsWith(`${type}/`);
         return mime === pat;
       }
-      // extension pattern like ".pdf"
       if (pat.startsWith(".")) return `.${ext}` === pat;
       return false;
     });
@@ -87,40 +79,31 @@ export default function UploadModal({
       setStatus(`Unsupported file type. Expected ${accept}`);
       return;
     }
-    if (!isLoaded) {
-      setStatus("Auth is still loading…");
-      return;
-    }
 
     try {
       setStatus(`Uploading “${file.name}”…`);
-      const token = await getToken();
       const fd = new FormData();
       fd.append("pdf", file);
 
-      const res = await fetch(`${API_BASE}/upload/pdf`, {
-        method: "POST",
-        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-        body: fd,
-      });
+      const json = (await api.upload(
+        endpoints.files.upload(),
+        fd
+      )) as any;
 
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = await res.json();
       const uploaded: Doc[] = json?.uploaded || [];
 
       setStatus(`Uploaded “${file.name}”.`);
 
-      // Use ONE pathway to update state
       onUploaded(uploaded);
 
       if (emitGlobalEvent) {
         window.dispatchEvent(
-          new CustomEvent("docchat:uploaded", { detail: uploaded }),
+          new CustomEvent("docchat:uploaded", { detail: uploaded })
         );
       }
 
       onClose();
-    } catch (e) {
+    } catch (e: any) {
       setStatus("Upload failed. Please try again.");
     }
   }

@@ -10,13 +10,14 @@ import UploadModal from "./components/ui/upload-modal";
 import { Alert } from "./components/ui/alert";
 
 import CommandPalette from "./components/command-palette";
-import StatusChip from "./components/ui/status-chip"; // used inside palette, tree-shake ok
+import StatusChip from "./components/ui/status-chip";
 import EmptyState from "./components/empty-state";
 
 import { useToasts, ToastViewport } from "./components/ui/use-toasts";
 import { useLocalStorageState } from "./lib/use-localstorage";
 import { useCmdK } from "./lib/use-cmdk";
 import { useAuth, SignedIn, SignedOut, SignInButton } from "@clerk/nextjs";
+import { API_BASE, useApi, endpoints } from "./lib/api-client";
 
 export type Doc = {
   id: string;
@@ -34,13 +35,18 @@ export type Message = {
   pending?: boolean;
 };
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
-
 export default function AppHome() {
   const router = useRouter();
   const search = useSearchParams();
   const { toasts, push } = useToasts();
-  const { getToken, isSignedIn } = useAuth();
+  const { isSignedIn } = useAuth();
+
+  // ⚠️ important: keep a stable ref to the api instance
+  const api = useApi();
+  const apiRef = React.useRef(api);
+  React.useEffect(() => {
+    apiRef.current = api;
+  }, [api]);
 
   const [docs, setDocs] = React.useState<Doc[]>([]);
   const [loadingDocs, setLoadingDocs] = React.useState(true);
@@ -111,19 +117,11 @@ export default function AppHome() {
     if (q) setActiveId(q);
   }, [search]);
 
-  // authFetch
-  const authFetch = React.useCallback(
-    async (url: string, init: RequestInit = {}) => {
-      const token = await getToken?.();
-      const headers = new Headers(init.headers || {});
-      if (token) headers.set("Authorization", `Bearer ${token}`);
-      return fetch(url, { ...init, headers });
-    },
-    [getToken]
-  );
-
-  // docs list
+  // ------------------------- fetch documents -------------------------
+  const fetchingRef = React.useRef(false);
   const fetchDocs = React.useCallback(async () => {
+    if (fetchingRef.current) return; // prevent overlapping calls
+    fetchingRef.current = true;
     try {
       setErrorDocs(null);
       if (!isSignedIn) {
@@ -131,33 +129,41 @@ export default function AppHome() {
         setLoadingDocs(false);
         return;
       }
-      const res = await authFetch(`${API_BASE}/documents`, {
+
+      const raw = await apiRef.current.get(endpoints.docs.list(), {
         cache: "no-store",
       });
-      if (res.status === 401 || res.status === 403) {
-        setErrorDocs("You’re signed out. Please sign in to view your library.");
-        setDocs([]);
-        return;
-      }
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json: Doc[] = await res.json();
-      setDocs(json || []);
+
+      // normalize to array
+      const list: Doc[] = Array.isArray(raw)
+        ? raw
+        : (raw?.documents as Doc[]) ??
+          (raw?.items as Doc[]) ??
+          (raw?.data as Doc[]) ??
+          [];
+
+      setDocs(list);
       setActiveId((curr) => {
         if (!curr) return null;
-        return (json || []).some((d) => d.id === curr) ? curr : null;
+        return list.some((d) => d.id === curr) ? curr : null;
       });
-    } catch {
-      setErrorDocs("Couldn’t load your library. Check the server & try again.");
+    } catch (e: any) {
+      const msg =
+        typeof e?.message === "string" && e.message
+          ? e.message
+          : "Couldn’t load your library. Check the server & try again.";
+      setErrorDocs(msg);
     } finally {
       setLoadingDocs(false);
+      fetchingRef.current = false;
     }
-  }, [authFetch, isSignedIn]);
+  }, [isSignedIn]); // <-- only depends on auth status (api comes via ref)
 
   React.useEffect(() => {
     fetchDocs();
   }, [fetchDocs]);
 
-  // poll while processing
+  // poll while processing (every 4s, no thrash)
   React.useEffect(() => {
     const needsPoll = docs.some((d) => d.status && d.status !== "ready");
     if (!needsPoll) return;
@@ -178,23 +184,19 @@ export default function AppHome() {
     try {
       const fd = new FormData();
       fd.append("pdf", file);
-      const token = await getToken?.();
-      const headers = new Headers();
-      if (token) headers.set("Authorization", `Bearer ${token}`);
-      const res = await fetch(`${API_BASE}/upload/pdf`, {
-        method: "POST",
-        body: fd,
-        headers,
-      });
-      if (res.status === 401 || res.status === 403) {
+
+      const json = (await apiRef.current.upload(
+        endpoints.files.upload(),
+        fd
+      )) as any;
+      onUploaded(json?.uploaded || []);
+      push(`Uploaded “${file.name}”. Processing…`);
+    } catch (e: any) {
+      const m = String(e?.message || "");
+      if (m.includes("401")) {
         push("Please sign in to upload.");
         return;
       }
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = await res.json();
-      onUploaded(json?.uploaded || []);
-      push(`Uploaded “${file.name}”. Processing…`);
-    } catch {
       push("Upload failed. Please try again.");
     }
   }
@@ -252,6 +254,27 @@ export default function AppHome() {
     if (activeId) router.replace(`?doc=${encodeURIComponent(activeId)}`);
   }, [activeId, router]);
 
+  // external delete handler
+  React.useEffect(() => {
+    function onDeleted(e: CustomEvent<{ id: string }>) {
+      const id = e?.detail?.id;
+      if (!id) return;
+      setDocs((prev) => prev.filter((d) => d.id !== id));
+      setConversations((prev) => {
+        const { [id]: _drop, ...rest } = prev;
+        return rest as typeof prev;
+      });
+      setActiveId((curr) => (curr === id ? null : curr));
+      push("Document deleted permanently.");
+    }
+    window.addEventListener("docchat:doc-deleted", onDeleted as EventListener);
+    return () =>
+      window.removeEventListener(
+        "docchat:doc-deleted",
+        onDeleted as EventListener
+      );
+  }, [push]);
+
   // chat send
   const sendMessage = async (docId: string, content: string) => {
     const addMsg = (m: Message) =>
@@ -286,17 +309,18 @@ export default function AppHome() {
     });
 
     try {
-      const res = await authFetch(`${API_BASE}/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          docId,
-          message: content,
-          sessionId: `doc-${docId}`,
-        }),
-      });
+      const json = (await apiRef.current.post(endpoints.chat.ask(docId), {
+        content,
+      })) as any;
 
-      if (res.status === 401 || res.status === 403) {
+      replaceMsg(placeholderId, {
+        pending: false,
+        content: json?.answer ?? "I don't have a response yet.",
+        ts: Date.now(),
+      });
+    } catch (e: any) {
+      const msg = String(e?.message || "");
+      if (msg.includes("401")) {
         replaceMsg(placeholderId, {
           pending: false,
           content: "Please sign in to chat with this document.",
@@ -305,7 +329,7 @@ export default function AppHome() {
         push("You’re signed out.");
         return;
       }
-      if (res.status === 409) {
+      if (msg.includes("409")) {
         replaceMsg(placeholderId, {
           pending: false,
           content:
@@ -314,27 +338,10 @@ export default function AppHome() {
         });
         return;
       }
-      if (!res.ok) {
-        replaceMsg(placeholderId, {
-          pending: false,
-          content:
-            "Hmm, I couldn't reach the server. Please try again in a moment.",
-          ts: Date.now(),
-        });
-        push("Chat server unreachable.");
-        return;
-      }
-      const json = await res.json();
-      replaceMsg(placeholderId, {
-        pending: false,
-        content: json.answer ?? "I don't have a response yet.",
-        ts: Date.now(),
-      });
-    } catch {
       replaceMsg(placeholderId, {
         pending: false,
         content:
-          "I hit a network error. Check your backend URL or internet connection.",
+          "I hit a network error. Check your internet connection.",
         ts: Date.now(),
       });
       push("Network error while chatting.");
@@ -376,7 +383,6 @@ export default function AppHome() {
   return (
     <div className="max-w-7xl mx-auto px-4 pb-8 pt-6">
       <ToastViewport toasts={toasts} />
-
       <SignedOut>
         <div className="mb-4">
           <Alert

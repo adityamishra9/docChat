@@ -3,8 +3,7 @@
 import * as React from "react";
 import { Upload, Loader2 } from "lucide-react";
 import type { Doc } from "../page";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
+import { useApi, endpoints } from "../lib/api-client";
 
 type Props = {
   onUploaded: (docs: Doc[]) => void;
@@ -15,6 +14,7 @@ export default function FileUpload({ onUploaded, inputId }: Props) {
   const [dragOver, setDragOver] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
   const inputRef = React.useRef<HTMLInputElement | null>(null);
+  const api = useApi();
 
   const handleFiles = async (files: FileList) => {
     const pdfs = Array.from(files).filter((f) => f.type === "application/pdf");
@@ -28,15 +28,12 @@ export default function FileUpload({ onUploaded, inputId }: Props) {
       form.append("pdf", pdf);
 
       try {
-        const res = await fetch(`${API_BASE}/upload/pdf`, {
-          method: "POST",
-          body: form,
-        });
-
-        if (!res.ok) throw new Error("Upload failed");
-
         // Expecting: { uploaded: [{ id, name, status }] }
-        const json = await res.json();
+        const json = (await api.upload(
+          endpoints.files.upload(),
+          form
+        )) as any;
+
         const items: Doc[] =
           json?.uploaded?.map(
             (u: { id: string; name?: string; status?: Doc["status"] }) => ({

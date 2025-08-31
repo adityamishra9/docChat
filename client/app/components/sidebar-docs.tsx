@@ -9,16 +9,10 @@ import {
   ChevronDown,
   Upload,
   Check,
+  Loader2,
 } from "lucide-react";
 import type { Doc } from "../page";
-
-type Props = {
-  docs: Doc[];
-  activeId: string | null;
-  onSelect: (id: string) => void;
-  onClearAll: () => void;
-  loading?: boolean;
-};
+import { useApi, endpoints } from "../lib/api-client";
 
 /* --------------------------------- utils --------------------------------- */
 function normalize(v: unknown) {
@@ -48,8 +42,6 @@ function useDebounced<T>(value: T, delay = 150) {
   }, [value, delay]);
   return v;
 }
-
-// status priority: queued → processing → ready → error
 function statusRank(s?: string) {
   const v = (s || "ready").toLowerCase();
   if (v === "queued") return 0;
@@ -79,6 +71,14 @@ function SkeletonList({ count = 6 }: { count?: number }) {
 }
 
 /* ------------------------------- component -------------------------------- */
+type Props = {
+  docs: Doc[];
+  activeId: string | null;
+  onSelect: (id: string) => void;
+  onClearAll: () => void; // clears local state (you already have this)
+  loading?: boolean;
+};
+
 export default function SidebarDocs({
   docs,
   activeId,
@@ -86,12 +86,35 @@ export default function SidebarDocs({
   onClearAll,
   loading = false,
 }: Props) {
+  const api = useApi();
+
   const [q, setQ] = React.useState("");
   const [statusFilter, setStatusFilter] = React.useState<
     "all" | "ready" | "processing" | "queued" | "error"
   >("all");
   const [sort, setSort] = React.useState<"recent" | "alpha">("recent");
   const [sortMenuOpen, setSortMenuOpen] = React.useState(false);
+
+  // bulk delete UI state
+  const [deletingAll, setDeletingAll] = React.useState(false);
+  const [deleteMsg, setDeleteMsg] = React.useState<string | null>(null);
+
+  // confirm dialog state (replaces window.confirm)
+  const [confirmOpen, setConfirmOpen] = React.useState(false);
+  const confirmPrimaryRef = React.useRef<HTMLButtonElement | null>(null);
+
+  React.useEffect(() => {
+    if (!confirmOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setConfirmOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    const t = setTimeout(() => confirmPrimaryRef.current?.focus(), 0);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      clearTimeout(t);
+    };
+  }, [confirmOpen]);
 
   const uniqueDocs = React.useMemo(() => {
     const seen = new Set<string>();
@@ -127,7 +150,6 @@ export default function SidebarDocs({
       return matchesQ && matchesStatus;
     });
 
-    // Sort with status priority first, then chosen order inside each bucket
     if (sort === "alpha") {
       result = [...result].sort((a, b) => {
         const sr = statusRank(a.status) - statusRank(b.status);
@@ -135,7 +157,6 @@ export default function SidebarDocs({
         return (a.name || "").localeCompare(b.name || "");
       });
     } else {
-      // recent: newer createdAt inside each status bucket
       result = [...result].sort((a, b) => {
         const sr = statusRank(a.status) - statusRank(b.status);
         if (sr !== 0) return sr;
@@ -149,10 +170,9 @@ export default function SidebarDocs({
     return result;
   }, [uniqueDocs, deferredQ, statusFilter, sort]);
 
-  // reset highlight when filters change
   React.useEffect(() => setHighlightIdx(-1), [deferredQ, statusFilter, sort]);
 
-  // keyboard navigation inside list
+  // keyboard navigation
   React.useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const ae = document.activeElement as HTMLElement | null;
@@ -162,7 +182,6 @@ export default function SidebarDocs({
           ae.tagName === "TEXTAREA" ||
           ae.isContentEditable);
       if (typing) return;
-
       if (filteredSorted.length === 0) return;
 
       if (e.key === "ArrowDown") {
@@ -181,7 +200,7 @@ export default function SidebarDocs({
     return () => window.removeEventListener("keydown", onKey);
   }, [filteredSorted, highlightIdx, onSelect]);
 
-  // keep highlighted item in view
+  // keep highlighted in view
   React.useEffect(() => {
     if (highlightIdx < 0) return;
     const el = listRef.current?.querySelector<HTMLLIElement>(
@@ -212,25 +231,52 @@ export default function SidebarDocs({
     };
   }, [sortMenuOpen]);
 
-  // open upload via global hidden input if present; otherwise open the modal
+  // open upload via global input or modal
   const tryOpenUpload = React.useCallback(() => {
     const input = document.getElementById(
       "global-upload"
     ) as HTMLInputElement | null;
-    if (input) {
-      input.click();
-    } else {
-      window.dispatchEvent(new CustomEvent("docchat:open-upload"));
-    }
+    if (input) input.click();
+    else window.dispatchEvent(new CustomEvent("docchat:open-upload"));
   }, []);
+
+  // ----------------------------- BULK DELETE (one API call) -----------------
+  const bulkDeleteAll = React.useCallback(async () => {
+    if (deletingAll) return;
+    const count = (docs || []).length;
+    if (count === 0) return;
+
+    setDeletingAll(true);
+    setDeleteMsg("Deleting all documents…");
+
+    try {
+      const res = (await api.del(endpoints.docs.removeAll())) as any;
+      const removed = Number(res?.deletedCount ?? 0);
+
+      // Broadcast a general wipe, in case some components are listening
+      window.dispatchEvent(
+        new CustomEvent("docchat:doc-deleted", { detail: { id: "*" } })
+      );
+
+      // Clear local state (docs + localStorage chats) via parent callback
+      onClearAll();
+
+      setDeleteMsg(`Deleted ${removed} document${removed === 1 ? "" : "s"}.`);
+      setTimeout(() => setDeleteMsg(null), 1600);
+    } catch (e: any) {
+      setDeleteMsg("Delete failed. Please try again.");
+      setTimeout(() => setDeleteMsg(null), 2000);
+    } finally {
+      setDeletingAll(false);
+      setConfirmOpen(false);
+    }
+  }, [api, docs, deletingAll, onClearAll]);
 
   return (
     <div className="h-full flex flex-col backdrop-blur-xl">
       {/* Search + sort + filters */}
       <div className="p-3 border-b border-white/10">
-        {/* row 1: search + sort */}
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-          {/* Search (grows) */}
           <div className="relative flex-1 min-w-0">
             <div className="flex items-center w-full rounded-full bg-white/[0.07] border border-white/10 focus-within:ring-2 focus-within:ring-emerald-400/30 focus-within:border-emerald-300/30 transition-shadow">
               <Search
@@ -262,7 +308,6 @@ export default function SidebarDocs({
             </div>
           </div>
 
-          {/* Sort (doesn't grow, never steals width) */}
           <div className="relative shrink-0 self-start sm:self-auto">
             <button
               ref={sortBtnRef}
@@ -383,7 +428,6 @@ export default function SidebarDocs({
             {filteredSorted.map((doc, i) => {
               const isActive = activeId === doc.id;
               const isHighlighted = highlightIdx === i;
-
               return (
                 <li key={doc.id} data-idx={i}>
                   <button
@@ -458,16 +502,113 @@ export default function SidebarDocs({
             <Upload size={16} />
             Upload
           </button>
+
           <button
-            onClick={onClearAll}
-            className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-rose-400/30 text-rose-200 hover:bg-rose-400/10"
-            title="Clear local list"
+            onClick={() => setConfirmOpen(true)}
+            disabled={deletingAll || (docs?.length ?? 0) === 0}
+            className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-rose-400/30 text-rose-200 
+              hover:bg-rose-400/10 disabled:opacity-60"
+            title="Permanently delete all documents"
+            aria-live="polite"
           >
-            <Trash2 size={16} />
-            Clear
+            {deletingAll ? (
+              <>
+                <Loader2 size={16} className="animate-spin" />
+                {deleteMsg || "Deleting…"}
+              </>
+            ) : (
+              <>
+                <Trash2 size={16} />
+                Clear
+              </>
+            )}
           </button>
         </div>
+        {deleteMsg && (
+          <div className="mt-2 text-[11px] text-white/60" aria-live="polite">
+            {deleteMsg}
+          </div>
+        )}
       </div>
+
+      {/* ----------------------- Confirm Delete Modal ----------------------- */}
+      {confirmOpen && (
+        <div
+          className="fixed inset-0 z-40"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="confirm-title"
+          aria-describedby="confirm-desc"
+        >
+          {/* Backdrop */}
+          <div
+            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            onClick={() => !deletingAll && setConfirmOpen(false)}
+          />
+          {/* Panel */}
+          <div className="absolute inset-0 flex items-center justify-center p-4">
+            <div className="w-full max-w-md rounded-2xl border border-white/10 bg-neutral-900/95 shadow-2xl">
+              <div className="flex items-start gap-3 p-4 border-b border-white/10">
+                <div className="shrink-0 inline-flex h-9 w-9 items-center justify-center rounded-xl border border-rose-400/30 bg-rose-400/10 text-rose-200">
+                  <Trash2 size={18} />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <h2 id="confirm-title" className="text-white font-medium">
+                    Delete all documents?
+                  </h2>
+                  <p id="confirm-desc" className="text-white/70 text-sm mt-1">
+                    This will permanently remove{" "}
+                    <strong>{docs?.length ?? 0}</strong> document
+                    {(docs?.length ?? 0) === 1 ? "" : "s"} and clear the chats.
+                    This action cannot be undone.
+                  </p>
+                </div>
+                <button
+                  className="p-2 rounded-lg hover:bg-white/10 text-white/70"
+                  onClick={() => setConfirmOpen(false)}
+                  aria-label="Close dialog"
+                  disabled={deletingAll}
+                >
+                  <X size={16} />
+                </button>
+              </div>
+
+              <div className="p-4 flex items-center justify-end gap-2">
+                <button
+                  className="px-3 py-2 rounded-lg border border-white/10 text-white/85 hover:bg-white/10"
+                  onClick={() => setConfirmOpen(false)}
+                  disabled={deletingAll}
+                >
+                  Cancel
+                </button>
+                <button
+                  ref={confirmPrimaryRef}
+                  className="inline-flex items-center gap-2 px-3 py-2 rounded-lg 
+                    bg-gradient-to-r from-rose-500/90 to-rose-600/90
+                    hover:from-rose-500 hover:to-rose-600
+                    text-white font-medium border border-rose-400/30
+                    disabled:opacity-60"
+                  onClick={bulkDeleteAll}
+                  disabled={deletingAll}
+                >
+                  {deletingAll ? (
+                    <>
+                      <Loader2 size={16} className="animate-spin" />
+                      Deleting…
+                    </>
+                  ) : (
+                    <>
+                      <Trash2 size={16} />
+                      Delete all
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* --------------------- /Confirm Delete Modal ---------------------- */}
     </div>
   );
 }
@@ -492,7 +633,6 @@ function StatusChip({
         : status === "ready"
           ? "Ready"
           : "Error";
-
   return (
     <span
       className={`inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full ${map[status]}`}

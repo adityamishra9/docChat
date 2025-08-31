@@ -9,6 +9,8 @@ import {
   PencilLine,
   Check,
   Loader2,
+  Trash2,
+  X,
 } from "lucide-react";
 import type { Doc, Message } from "../page";
 import { Alert } from "./ui/alert";
@@ -17,6 +19,7 @@ import remarkGfm from "remark-gfm";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { useAuth } from "@clerk/nextjs";
+import { API_BASE, useApi, endpoints } from "../lib/api-client";
 
 type CodeProps = React.DetailedHTMLProps<
   React.HTMLAttributes<HTMLElement>,
@@ -27,7 +30,6 @@ type CodeProps = React.DetailedHTMLProps<
   children?: React.ReactNode;
 };
 
-/* ----------------------------- Status pill UI ----------------------------- */
 function StatusChip({
   status,
 }: {
@@ -59,7 +61,6 @@ function StatusChip({
   );
 }
 
-/* ------------------------------ Quick prompts ----------------------------- */
 const SUGGESTIONS = [
   "Summarize this PDF in 5 bullet points.",
   "List key terms and their definitions.",
@@ -67,7 +68,6 @@ const SUGGESTIONS = [
   "Extract all dates, names, and figures.",
 ];
 
-/* ------------------------------ Message Bubble ---------------------------- */
 function MarkdownContent({ children }: { children: string }) {
   return (
     <ReactMarkdown
@@ -207,22 +207,20 @@ function MessageBubble({
             {isUser ? (
               <span className="text-white/60">{time}</span>
             ) : (
-              <>
-                {!msg.pending && (
-                  <button
-                    onClick={async () => {
-                      await onCopy(msg.content);
-                      setCopied(true);
-                      setTimeout(() => setCopied(false), 1200);
-                    }}
-                    title={copied ? "Copied!" : "Copy"}
-                    className="p-1 rounded text-white/70 hover:text-white hover:bg-white/10"
-                    aria-live="polite"
-                  >
-                    {copied ? <Check size={14} /> : <Copy size={14} />}
-                  </button>
-                )}
-              </>
+              !msg.pending && (
+                <button
+                  onClick={async () => {
+                    await onCopy(msg.content);
+                    setCopied(true);
+                    setTimeout(() => setCopied(false), 1200);
+                  }}
+                  title={copied ? "Copied!" : "Copy"}
+                  className="p-1 rounded text-white/70 hover:text-white hover:bg-white/10"
+                  aria-live="polite"
+                >
+                  {copied ? <Check size={14} /> : <Copy size={14} />}
+                </button>
+              )
             )}
           </div>
 
@@ -261,7 +259,6 @@ function MessageBubble({
   );
 }
 
-/* --------------------------------- Component ------------------------------ */
 type Props = {
   doc: Doc;
   messages: Message[];
@@ -286,10 +283,45 @@ export default function ChatWindow({
   const textareaRef = React.useRef<HTMLTextAreaElement | null>(null);
   const userIsNearBottomRef = React.useRef(true);
 
-  const { getToken, isSignedIn } = useAuth(); // ⬅️ auth available here
-  const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
+  const { isSignedIn } = useAuth(); // just for hints
+  const api = useApi();
 
-  /* ----------------------- scrolling + autosize ----------------------- */
+  // delete dialog state (replaces window.confirm)
+  const [deleting, setDeleting] = React.useState(false);
+  const [confirmOpen, setConfirmOpen] = React.useState(false);
+  const confirmPrimaryRef = React.useRef<HTMLButtonElement | null>(null);
+
+  React.useEffect(() => {
+    if (!confirmOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setConfirmOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    const t = setTimeout(() => confirmPrimaryRef.current?.focus(), 0);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      clearTimeout(t);
+    };
+  }, [confirmOpen]);
+
+  async function confirmDelete() {
+    if (deleting) return;
+    try {
+      setDeleting(true);
+      await api.del(endpoints.docs.remove(doc.id));
+      window.dispatchEvent(
+        new CustomEvent("docchat:doc-deleted", { detail: { id: doc.id } })
+      );
+    } catch (e: any) {
+      setErrorMsg(e?.message || "Delete failed. Please try again.");
+      setTimeout(() => setErrorMsg(null), 2500);
+    } finally {
+      setDeleting(false);
+      setConfirmOpen(false);
+    }
+  }
+
+  /* scrolling + autosize */
   React.useEffect(() => {
     const el = scrollerRef.current;
     if (!el) return;
@@ -319,7 +351,7 @@ export default function ChatWindow({
     autosize();
   }, [text, autosize]);
 
-  /* ----------------------------- send message ----------------------------- */
+  /* send message */
   const submit = async (value?: string) => {
     const payload = (value ?? text).trim();
     if (!payload || sending) return;
@@ -336,7 +368,7 @@ export default function ChatWindow({
     }
   };
 
-  /* ------------------------------ upload PDF ------------------------------ */
+  /* upload PDF */
   const isPdf = (f: File) =>
     f.type === "application/pdf" ||
     f.type === "application/x-pdf" ||
@@ -364,33 +396,18 @@ export default function ChatWindow({
       const fd = new FormData();
       fd.append("pdf", file);
 
-      const token = await getToken?.();
-      const headers = new Headers();
-      if (token) headers.set("Authorization", `Bearer ${token}`);
+      const json = (await api.upload(endpoints.files.upload(), fd)) as any;
 
-      const res = await fetch(`${API_BASE}/upload/pdf`, {
-        method: "POST",
-        body: fd,
-        headers,
-      });
-
-      if (res.status === 401 || res.status === 403) {
-        setUploadingMsg(null);
-        setErrorMsg("Please sign in to upload.");
-        setTimeout(() => setErrorMsg(null), 2500);
-        return;
-      }
-
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-      const json = await res.json();
-
-      // Announce + bubble to the app to upsert and focus the new doc
       setUploadingMsg(`Uploaded “${file.name}”. Processing…`);
       onUploaded?.(json?.uploaded || []);
-    } catch (e) {
+    } catch (e: any) {
+      const msg = String(e?.message || "");
       setUploadingMsg(null);
-      setErrorMsg("Upload failed. Please try again.");
+      setErrorMsg(
+        msg.includes("401") || msg.includes("403")
+          ? "Please sign in to upload."
+          : "Upload failed. Please try again."
+      );
       setTimeout(() => setErrorMsg(null), 2500);
     } finally {
       setTimeout(() => setUploadingMsg(null), 1200);
@@ -405,9 +422,8 @@ export default function ChatWindow({
     else window.dispatchEvent(new CustomEvent("docchat:open-upload"));
   }
 
-  /* ----------------------------- helpers/consts ---------------------------- */
   const disabled = (doc.status && doc.status !== "ready") || sending;
-  const FILE_URL = `${API_BASE}/files/${encodeURIComponent(doc.id)}`;
+  const FILE_URL = `${API_BASE}${endpoints.files.download(encodeURIComponent(doc.id))}`;
 
   const copyText = async (text: string) => {
     try {
@@ -442,20 +458,11 @@ export default function ChatWindow({
         if (file) await uploadPdf(file);
       }}
     >
-      {/* Drag overlay */}
-      {dragOver && (
-        <div className="pointer-events-none absolute inset-0 z-10 grid place-items-center rounded-2xl bg-emerald-500/10 border-2 border-dashed border-emerald-400/50">
-          <div className="text-emerald-100 text-sm">
-            {isSignedIn ? "Drop your PDF to upload" : "Sign in to upload"}
-          </div>
-        </div>
-      )}
-
-      {/* Floating alert stack (modern, subtle, animated) */}
+      {/* Alerts */}
       <div className="pointer-events-none absolute top-3 right-3 z-20 space-y-2 w-[min(90vw,340px)]">
         {errorMsg && (
           <div className="pointer-events-auto animate-[fadeIn_.2s_ease-out]">
-            <Alert variant="error" tone="solid" title="Upload">
+            <Alert variant="error" tone="solid" title="Notice">
               {errorMsg}
             </Alert>
           </div>
@@ -488,6 +495,23 @@ export default function ChatWindow({
           <StatusChip status={doc.status ?? "ready"} />
         </div>
         <div className="flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={() => setConfirmOpen(true)}
+            title="Delete this PDF permanently"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg 
+               bg-rose-500/15 hover:bg-rose-500/25 
+               text-rose-100 border border-rose-400/30
+               text-xs font-medium"
+          >
+            {deleting ? (
+              <Loader2 size={14} className="animate-spin" />
+            ) : (
+              <Trash2 size={14} />
+            )}
+            Delete
+          </button>
+
           <button
             type="button"
             onClick={() =>
@@ -614,6 +638,83 @@ export default function ChatWindow({
           <kbd className="px-1 rounded bg-white/10">Enter</kbd> for new line
         </div>
       </div>
+
+      {/* ----------------------- Confirm Delete Modal ----------------------- */}
+      {confirmOpen && (
+        <div
+          className="fixed inset-0 z-40"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="confirm-title"
+          aria-describedby="confirm-desc"
+        >
+          {/* Backdrop */}
+          <div
+            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            onClick={() => !deleting && setConfirmOpen(false)}
+          />
+          {/* Panel */}
+          <div className="absolute inset-0 flex items-center justify-center p-4">
+            <div className="w-full max-w-md rounded-2xl border border-white/10 bg-neutral-900/95 shadow-2xl">
+              <div className="flex items-start gap-3 p-4 border-b border-white/10">
+                <div className="shrink-0 inline-flex h-9 w-9 items-center justify-center rounded-xl border border-rose-400/30 bg-rose-400/10 text-rose-200">
+                  <Trash2 size={18} />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <h2 id="confirm-title" className="text-white font-medium">
+                    Delete this document?
+                  </h2>
+                  <p id="confirm-desc" className="text-white/70 text-sm mt-1">
+                    This will permanently remove{" "}
+                    <strong className="text-white/90">{doc.name}</strong> and
+                    clear related chats. This action cannot be undone.
+                  </p>
+                </div>
+                <button
+                  className="p-2 rounded-lg hover:bg-white/10 text-white/70"
+                  onClick={() => setConfirmOpen(false)}
+                  aria-label="Close dialog"
+                  disabled={deleting}
+                >
+                  <X size={16} />
+                </button>
+              </div>
+
+              <div className="p-4 flex items-center justify-end gap-2">
+                <button
+                  className="px-3 py-2 rounded-lg border border-white/10 text-white/85 hover:bg-white/10"
+                  onClick={() => setConfirmOpen(false)}
+                  disabled={deleting}
+                >
+                  Cancel
+                </button>
+                <button
+                  ref={confirmPrimaryRef}
+                  className="inline-flex items-center gap-2 px-3 py-2 rounded-lg 
+                    bg-gradient-to-r from-rose-500/90 to-rose-600/90
+                    hover:from-rose-500 hover:to-rose-600
+                    text-white font-medium border border-rose-400/30
+                    disabled:opacity-60"
+                  onClick={confirmDelete}
+                  disabled={deleting}
+                >
+                  {deleting ? (
+                    <>
+                      <Loader2 size={16} className="animate-spin" />
+                      Deleting…
+                    </>
+                  ) : (
+                    <>
+                      <Trash2 size={16} />
+                      Delete
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
