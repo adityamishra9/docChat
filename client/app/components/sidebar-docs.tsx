@@ -11,7 +11,7 @@ import {
   Check,
   Loader2,
 } from "lucide-react";
-import type { Doc } from "../page";
+import type { Doc } from "@/app/types";
 import { useApi, endpoints } from "../lib/api-client";
 
 /* --------------------------------- utils --------------------------------- */

@@ -1,7 +1,6 @@
 "use client";
 import * as React from "react";
-
-export type Status = "queued" | "processing" | "ready" | "error";
+import { Status } from "@/app/types";
 
 /** Pill used in lists and the command palette */
 export default function StatusChip({ status }: { status: Status | "ready" }) {

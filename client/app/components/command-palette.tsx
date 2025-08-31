@@ -3,22 +3,7 @@
 import * as React from "react";
 import { Search } from "lucide-react";
 import StatusChip from "./ui/status-chip";
-
-export type Doc = {
-  id: string;
-  name: string;
-  pages?: number;
-  status?: "queued" | "processing" | "ready" | "error";
-  createdAt?: string;
-};
-
-type Props = {
-  isOpen: boolean;
-  onClose: () => void;
-  docs: Doc[];
-  activeId: string | null;
-  onSelectDoc: (id: string) => void;
-};
+import { Props } from "@/app/types";
 
 export default function CommandPalette({
   isOpen,

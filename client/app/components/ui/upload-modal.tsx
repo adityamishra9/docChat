@@ -3,26 +3,7 @@
 import * as React from "react";
 import { X, FileUp } from "lucide-react";
 import { useApi, endpoints } from "../../lib/api-client";
-
-export type Doc = {
-  id: string;
-  name: string;
-  size?: number;
-  pages?: number;
-  status?: "queued" | "processing" | "ready" | "error";
-  createdAt?: string;
-};
-
-export type UploadModalProps = {
-  open: boolean;
-  onClose: () => void;
-  onSelect?: (file: File) => void | Promise<void>;
-  onUploaded?: (uploaded: Doc[]) => void;
-  emitGlobalEvent?: boolean;
-  title?: string;
-  accept?: string;
-  helperText?: string;
-};
+import { Doc, UploadModalProps } from "@/app/types";
 
 export default function UploadModal({
   open,

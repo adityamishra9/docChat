@@ -10,30 +10,13 @@ import UploadModal from "./components/ui/upload-modal";
 import { Alert } from "./components/ui/alert";
 
 import CommandPalette from "./components/command-palette";
-import StatusChip from "./components/ui/status-chip";
 import EmptyState from "./components/empty-state";
-
 import { useToasts, ToastViewport } from "./components/ui/use-toasts";
 import { useLocalStorageState } from "./lib/use-localstorage";
 import { useCmdK } from "./lib/use-cmdk";
 import { useAuth, SignedIn, SignedOut, SignInButton } from "@clerk/nextjs";
 import { API_BASE, useApi, endpoints } from "./lib/api-client";
-
-export type Doc = {
-  id: string;
-  name: string;
-  size?: number;
-  pages?: number;
-  status?: "queued" | "processing" | "ready" | "error";
-  createdAt?: string;
-};
-export type Message = {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  ts: number;
-  pending?: boolean;
-};
+import type { Doc, Message } from "./types";
 
 export default function AppHome() {
   const router = useRouter();
@@ -41,7 +24,7 @@ export default function AppHome() {
   const { toasts, push } = useToasts();
   const { isSignedIn } = useAuth();
 
-  // ⚠️ important: keep a stable ref to the api instance
+  // keep a stable ref to the api instance
   const api = useApi();
   const apiRef = React.useRef(api);
   React.useEffect(() => {
@@ -117,7 +100,7 @@ export default function AppHome() {
     if (q) setActiveId(q);
   }, [search]);
 
-  // ------------------------- fetch documents -------------------------
+  // ---------------------- fetch documents (initial/load) ----------------------
   const fetchingRef = React.useRef(false);
   const fetchDocs = React.useCallback(async () => {
     if (fetchingRef.current) return; // prevent overlapping calls
@@ -134,11 +117,11 @@ export default function AppHome() {
         cache: "no-store",
       });
 
-      // normalize to array
+      // normalize to array (supports multiple shapes)
       const list: Doc[] = Array.isArray(raw)
         ? raw
-        : (raw?.documents as Doc[]) ??
-          (raw?.items as Doc[]) ??
+        : (raw?.items as Doc[]) ??
+          (raw?.documents as Doc[]) ??
           (raw?.data as Doc[]) ??
           [];
 
@@ -157,23 +140,138 @@ export default function AppHome() {
       setLoadingDocs(false);
       fetchingRef.current = false;
     }
-  }, [isSignedIn]); // <-- only depends on auth status (api comes via ref)
+  }, [isSignedIn]);
 
   React.useEffect(() => {
     fetchDocs();
   }, [fetchDocs]);
 
-  // poll while processing (every 4s, no thrash)
-  React.useEffect(() => {
-    const needsPoll = docs.some((d) => d.status && d.status !== "ready");
-    if (!needsPoll) return;
-    const t = setInterval(fetchDocs, 4000);
-    return () => clearInterval(t);
-  }, [docs, fetchDocs]);
+  // ------------------------------ SSE subscription ---------------------------
+  const [sseConnected, setSseConnected] = React.useState(false);
+  const backoffRef = React.useRef(2000); // for reconnects (2s → max 30s)
 
+  React.useEffect(() => {
+    if (!isSignedIn) return;
+
+    let es: EventSource | null = null;
+    let canceled = false;
+
+    function connect() {
+      if (canceled) return;
+      try {
+        es = new EventSource(`${API_BASE}/events`, { withCredentials: true });
+      } catch {
+        scheduleReconnect();
+        return;
+      }
+
+      es.addEventListener("hello", () => {
+        backoffRef.current = 2000;
+        setSseConnected(true);
+      });
+
+      es.addEventListener("doc", (e: MessageEvent) => {
+        // server sends: { type, docId, status, pct?, stage?, error?, pages? }
+        try {
+          const payload = JSON.parse(e.data) as {
+            type: "progress" | "completed" | "failed";
+            docId: string;
+            status?: Doc["status"];
+            pct?: number | null;
+            stage?: string | null;
+            error?: string | null;
+            pages?: number | null; // <<< added
+            createdAt?: string | null; // (not sent today, but we accept it)
+          };
+
+          setDocs((prev) => {
+            if (!prev?.length) return prev;
+            let found = false;
+            const next = prev.map((d) => {
+              if (d.id !== payload.docId) return d;
+              found = true;
+              return {
+                ...d,
+                status: payload.status ?? d.status,
+                // take pages/createdAt if provided by SSE
+                pages: payload.pages ?? d.pages, // <<< added
+                createdAt: payload.createdAt ?? d.createdAt, // <<< added (no-op unless sent)
+              };
+            });
+
+            if (!found) fetchDocs(); // in case of new item from another tab
+
+            // If we just completed and still don't have pages, fetch the lightweight status endpoint once.
+            if (
+              payload.type === "completed" &&
+              (next.find((x) => x.id === payload.docId)?.pages == null)
+            ) {
+              (async () => {
+                try {
+                  const s = (await apiRef.current.get(
+                    endpoints.docs.status(payload.docId) // <<< uses /documents/:id/status
+                  )) as { id: string; status: Doc["status"]; pages: number | null };
+                  setDocs((curr) =>
+                    curr.map((d) =>
+                      d.id === payload.docId
+                        ? { ...d, status: s.status ?? d.status, pages: s.pages ?? d.pages }
+                        : d
+                    )
+                  );
+                } catch {
+                  /* ignore */
+                }
+              })();
+            }
+
+            return next;
+          });
+        } catch {
+          /* ignore bad payloads */
+        }
+      });
+
+      es.onerror = () => {
+        setSseConnected(false);
+        es?.close();
+        es = null;
+        scheduleReconnect();
+      };
+    }
+
+    function scheduleReconnect() {
+      if (canceled) return;
+      const delay = Math.min(backoffRef.current, 30000);
+      const t = setTimeout(() => {
+        if (canceled) return;
+        backoffRef.current = Math.min(backoffRef.current * 2, 30000);
+        connect();
+      }, delay);
+      (scheduleReconnect as any)._t = t;
+    }
+
+    connect();
+
+    return () => {
+      canceled = true;
+      setSseConnected(false);
+      if (es) es.close();
+      const t = (scheduleReconnect as any)._t as number | undefined;
+      if (t) clearTimeout(t);
+    };
+  }, [isSignedIn, fetchDocs]);
+
+  // ----------------------- fallback poll (only if needed) ---------------------
+  React.useEffect(() => {
+    if (!isSignedIn) return;
+    if (sseConnected) return;
+    const t = setInterval(fetchDocs, 60000);
+    return () => clearInterval(t);
+  }, [isSignedIn, sseConnected, fetchDocs]);
+
+  // --------------------------------- uploads ---------------------------------
   const selectDoc = (id: string) => setActiveId(id);
 
-  // uploads
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
   async function uploadPdf(file: File) {
     if (!file) return;
@@ -189,8 +287,10 @@ export default function AppHome() {
         endpoints.files.upload(),
         fd
       )) as any;
+
       onUploaded(json?.uploaded || []);
       push(`Uploaded “${file.name}”. Processing…`);
+      // SSE will drive status/pages after this
     } catch (e: any) {
       const m = String(e?.message || "");
       if (m.includes("401")) {
@@ -229,7 +329,7 @@ export default function AppHome() {
       window.removeEventListener("docchat:open-upload", open as EventListener);
   }, []);
 
-  // receive uploaded docs
+  // receive uploaded docs (optimistic add → SSE will drive status)
   function upsertById(prev: Doc[], incoming: Doc[]) {
     const map = new Map(prev.map((d) => [d.id, d]));
     for (const d of incoming) {
@@ -242,8 +342,13 @@ export default function AppHome() {
   const onUploaded = React.useCallback(
     (uploaded: Doc[]) => {
       if (!uploaded?.length) return;
-      setDocs((prev) => upsertById(prev, uploaded));
-      const firstId = uploaded[0].id;
+      // give new items a createdAt immediately so "x min ago" renders  // <<< added
+      const nowIso = new Date().toISOString();
+      const stamped = uploaded.map((d) =>
+        d.createdAt ? d : { ...d, createdAt: nowIso }
+      );
+      setDocs((prev) => upsertById(prev, stamped));
+      const firstId = stamped[0].id;
       setActiveId(firstId);
       setConversations((prev) => ({ ...prev, [firstId]: [] }));
     },
@@ -340,8 +445,7 @@ export default function AppHome() {
       }
       replaceMsg(placeholderId, {
         pending: false,
-        content:
-          "I hit a network error. Check your internet connection.",
+        content: "I hit a network error. Check your internet connection.",
         ts: Date.now(),
       });
       push("Network error while chatting.");
@@ -383,6 +487,7 @@ export default function AppHome() {
   return (
     <div className="max-w-7xl mx-auto px-4 pb-8 pt-6">
       <ToastViewport toasts={toasts} />
+
       <SignedOut>
         <div className="mb-4">
           <Alert
@@ -434,7 +539,7 @@ export default function AppHome() {
         docs={docs}
         activeId={activeId}
         onSelectDoc={(id) => {
-          selectDoc(id);
+          setActiveId(id);
           setCmdOpen(false);
         }}
       />
@@ -467,7 +572,7 @@ export default function AppHome() {
             <SidebarDocs
               docs={docs}
               activeId={activeId}
-              onSelect={(id) => selectDoc(id)}
+              onSelect={(id) => setActiveId(id)}
               onClearAll={() => {
                 setDocs([]);
                 setActiveId(null);
@@ -594,7 +699,7 @@ export default function AppHome() {
                 docs={docs}
                 activeId={activeId}
                 onSelect={(id) => {
-                  selectDoc(id);
+                  setActiveId(id);
                   setSidebarOpen(false);
                 }}
                 onClearAll={() => {

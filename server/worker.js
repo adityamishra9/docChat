@@ -1,4 +1,11 @@
 // worker.js
+// -----------------------------------------------------------------------------
+// DocChat Worker (BullMQ)
+// - Handles: file-ready (ingest/index PDF), hard-delete (purge vector + blob + row)
+// - Emits BullMQ progress events with { ownerId, docId, status, pct, stage }
+// - Returns { ownerId, docId } for file-ready so QueueEvents 'completed' can target SSE
+// -----------------------------------------------------------------------------
+
 import "dotenv/config";
 import { Worker } from "bullmq";
 import fs from "fs";
@@ -23,16 +30,29 @@ const REDIS_PORT = Number(process.env.REDIS_PORT || 6379);
 const QDRANT_URL = process.env.QDRANT_URL || "http://localhost:6333";
 const EMBEDDINGS_URL =
   process.env.EMBEDDINGS_URL || "http://localhost:8001/embeddings";
-const MONGODB_URI = process.env.MONGODB_URI || "mongodb://localhost:27018";
 
 /** OCR env */
 const OCR_ENABLED = String(process.env.OCR_ENABLED || "true") === "true";
 const OCR_LANGS = process.env.OCR_LANGS || "eng";
-const OCR_DPI = Number(process.env.OCR_DPI || 300);
-const OCR_TEXT_MIN_THRESHOLD = Number(process.env.OCR_TEXT_MIN_THRESHOLD || 800); // if below this, we try OCR
+const OCR_DPI_LIST = (process.env.OCR_DPI_LIST || "")
+  .split(",")
+  .map((s) => parseInt(s.trim(), 10))
+  .filter((n) => Number.isFinite(n) && n > 0);
+const OCR_DPI_FALLBACK = Number(process.env.OCR_DPI || 300);
+const EFFECTIVE_DPIS = OCR_DPI_LIST.length ? OCR_DPI_LIST : [OCR_DPI_FALLBACK];
+const OCR_TEXT_MIN_THRESHOLD = Number(process.env.OCR_TEXT_MIN_THRESHOLD || 800);
 const OCR_MAX_PAGES = process.env.OCR_MAX_PAGES
   ? Number(process.env.OCR_MAX_PAGES)
-  : undefined; // e.g. 200 to cap runtime on huge PDFs
+  : undefined;
+
+/* Debug print of OCR env */
+console.log("[worker] OCR settings →", {
+  OCR_ENABLED,
+  OCR_LANGS,
+  EFFECTIVE_DPIS,
+  OCR_TEXT_MIN_THRESHOLD,
+  OCR_MAX_PAGES,
+});
 
 /* ---------------------------- Helpers ---------------------------- */
 async function embedLocally(texts) {
@@ -70,36 +90,29 @@ function safeRmdir(p) {
 /* ---------------------------- PDF text extraction ---------------------------- */
 
 async function extractWithPdfLoader(tmpPdfPath) {
-  // 1) Extract per-page docs via PDFLoader
-  const pages = await new PDFLoader(tmpPdfPath).load(); // one Document per page
-  const totalTextLen = pages.reduce((sum, d) => sum + (d.pageContent?.length || 0), 0);
+  const pages = await new PDFLoader(tmpPdfPath).load();
+  const totalTextLen = pages.reduce(
+    (sum, d) => sum + (d.pageContent?.length || 0),
+    0
+  );
   return { pages, totalTextLen };
 }
 
 /* ------------------------------- OCR fallback ------------------------------- */
 /**
- * Use poppler's pdftoppm to rasterize PDF pages to PNGs, then run Tesseract OCR.
- * Requires these system binaries inside the container/host:
- *  - pdftoppm (from poppler-utils)
- *  - tesseract-ocr
+ * Rasterize with pdftoppm at a given DPI → PNGs, then run Tesseract per page.
  */
 async function rasterizePdfToPngs(tmpPdfPath, outDir, dpi = 300, pageLimit) {
   fs.mkdirSync(outDir, { recursive: true });
-
-  // pdftoppm -png -r <dpi> input.pdf outdir/page
   const prefix = path.join(outDir, "page");
-  const args = ["-png", `-r`, String(dpi), tmpPdfPath, prefix];
 
-  // If we want to cap pages: pdftoppm supports -singlefile/-f/-l
-  // We'll detect page count cheaply by trying to use -l if pageLimit is set.
+  const args = ["-png", "-r", String(dpi), tmpPdfPath, prefix];
   if (pageLimit && Number.isFinite(pageLimit)) {
-    args.splice(0, 0, "-l", String(pageLimit));
+    // limit last page (from 1) e.g. -l 200
+    args.unshift("-l", String(pageLimit));
   }
-
-  // Run rasterization
   await execFile("pdftoppm", args);
 
-  // Collect generated files: page-1.png, page-2.png, ...
   const files = fs
     .readdirSync(outDir)
     .filter((f) => f.startsWith("page-") && f.endsWith(".png"))
@@ -111,27 +124,31 @@ async function rasterizePdfToPngs(tmpPdfPath, outDir, dpi = 300, pageLimit) {
     .map((f) => path.join(outDir, f));
 
   if (!files.length) {
-    // Some pdftoppm versions output "page-1.png" with a different pattern "page-01.png"
-    const altFiles = fs
+    const alt = fs
       .readdirSync(outDir)
       .filter((f) => f.startsWith("page") && f.endsWith(".png"))
       .map((f) => path.join(outDir, f))
       .sort();
-    return altFiles;
+    return alt;
   }
   return files;
 }
 
-async function ocrImagesToDocuments(pngPaths, docMeta) {
+async function ocrImagesToDocuments(pngPaths, docMeta, langs) {
   const docs = [];
+  let sumConf = 0;
+  let confCount = 0;
+
   for (let i = 0; i < pngPaths.length; i++) {
     const p = pngPaths[i];
     const pageNum = i + 1;
-    const { data } = await Tesseract.recognize(p, OCR_LANGS, {
-      // Node version of tesseract.js will download traineddata to ~/.cache by default.
-      // You can override with { cachePath: '/tmp/tess-cache' } if needed.
-    });
+    const { data } = await Tesseract.recognize(p, langs);
     const text = (data?.text || "").trim();
+    const conf = Number.isFinite(data?.confidence) ? Number(data.confidence) : undefined;
+    if (Number.isFinite(conf)) {
+      sumConf += conf;
+      confCount += 1;
+    }
     docs.push({
       pageContent: text,
       metadata: {
@@ -143,38 +160,28 @@ async function ocrImagesToDocuments(pngPaths, docMeta) {
       },
     });
   }
-  return docs;
+
+  const textLen = docs.reduce((s, d) => s + (d.pageContent?.length || 0), 0);
+  const meanConf = confCount ? sumConf / confCount : null;
+
+  return { docs, textLen, meanConf };
 }
 
 /* ---------------------------- Chunk + Index ---------------------------- */
 
 async function chunkAndIndex(name, docId, ownerId, baseDocs, collectionName) {
-  // Split into chunks
-  const splitter = new CharacterTextSplitter({
-    chunkSize: 1000,
-    chunkOverlap: 200,
-  });
+  const splitter = new CharacterTextSplitter({ chunkSize: 1000, chunkOverlap: 200 });
   const chunks = await splitter.splitDocuments(
-    baseDocs.map((c) => ({
-      pageContent: c.pageContent,
-      metadata: c.metadata,
-    }))
+    baseDocs.map((c) => ({ pageContent: c.pageContent, metadata: c.metadata }))
   );
+  if (!chunks?.length) throw new Error("No chunks created from document text");
 
-  if (!chunks?.length) {
-    throw new Error("No chunks created from document text");
-  }
-
-  // Pre-embed all chunks
   const texts = chunks.map((c) => c.pageContent);
   const vectors = await embedLocally(texts);
   if (!Array.isArray(vectors) || vectors.length !== chunks.length) {
-    throw new Error(
-      `Embedding count mismatch (${vectors?.length} != ${chunks.length})`
-    );
+    throw new Error(`Embedding count mismatch (${vectors?.length} != ${chunks.length})`);
   }
 
-  // Index into Qdrant
   await QdrantVectorStore.fromDocuments(
     chunks,
     {
@@ -194,29 +201,32 @@ async function chunkAndIndex(name, docId, ownerId, baseDocs, collectionName) {
 
 async function handleFileReady(job) {
   const docIdStr = job.data.docId;
+  const ownerIdFromJob = job.data.ownerId;
+  console.log("[worker] processing docId:", docIdStr);
   if (!docIdStr) throw new Error("job.data.docId missing");
 
   const docId = new ObjectId(docIdStr);
   const col = (await db()).collection("documents");
 
-  // Verify document exists
   const rec = await col.findOne({ _id: docId });
   if (!rec) throw new Error("Doc not found");
+  const ownerId = ownerIdFromJob || rec.ownerId;
 
-  // Mark processing early
   await col.updateOne({ _id: docId }, { $set: { status: "processing" } });
+  try {
+    await job.updateProgress({ ownerId, docId: String(docId), status: "processing", pct: 5, stage: "start" });
+  } catch {}
 
-  // temp paths
   const tmpPdf = path.join(os.tmpdir(), `${String(docId)}.pdf`);
-  const ocrDir = path.join(os.tmpdir(), `${String(docId)}_ocr`);
+  const ocrRoot = path.join(os.tmpdir(), `${String(docId)}_ocr`);
 
   try {
-    // GridFS → temp
+    await job.updateProgress({ ownerId, docId: String(docId), status: "processing", pct: 10, stage: "download" });
     await gridfsToTempPdf(rec.gridId, tmpPdf);
 
-    // 1) Try native text extraction first
+    // 1) Native text extraction
+    await job.updateProgress({ ownerId, docId: String(docId), status: "processing", pct: 30, stage: "pdf-parse" });
     const { pages, totalTextLen } = await extractWithPdfLoader(tmpPdf);
-
     let baseDocs = pages.map((c) => ({
       pageContent: c.pageContent || "",
       metadata: {
@@ -228,53 +238,74 @@ async function handleFileReady(job) {
       },
     }));
 
-    // 2) Decide whether to OCR
+    // 2) OCR decision
     const shouldOCR =
       OCR_ENABLED &&
-      (totalTextLen < OCR_TEXT_MIN_THRESHOLD ||
-        baseDocs.every((d) => !d.pageContent?.trim()));
+      (totalTextLen < OCR_TEXT_MIN_THRESHOLD || baseDocs.every((d) => !d.pageContent?.trim()));
 
     if (shouldOCR) {
+      await job.updateProgress({ ownerId, docId: String(docId), status: "processing", pct: 45, stage: "ocr" });
       console.log(
-        `[worker] ${rec.name}: low text (${totalTextLen}). Running OCR fallback…`
+        `[worker] ${rec.name}: low text (${totalTextLen}). Running OCR fallback across DPIs ${JSON.stringify(
+          EFFECTIVE_DPIS
+        )} …`
       );
 
-      // Cap pages if configured, to avoid runaway CPU on huge PDFs
-      const pngs = await rasterizePdfToPngs(
-        tmpPdf,
-        ocrDir,
-        OCR_DPI,
-        OCR_MAX_PAGES
-      );
-      if (!pngs.length) {
-        throw new Error("OCR fallback: no rasterized pages produced");
+      let best = { docs: null, textLen: -1, meanConf: -1, dpi: null, pages: 0 };
+
+      for (const dpi of EFFECTIVE_DPIS) {
+        const dir = path.join(ocrRoot, `dpi_${dpi}`);
+        const pngs = await rasterizePdfToPngs(tmpPdf, dir, dpi, OCR_MAX_PAGES);
+        if (!pngs.length) {
+          console.warn(`[worker] ${rec.name}: dpi=${dpi} produced 0 PNGs`);
+          continue;
+        }
+
+        const pass = await ocrImagesToDocuments(
+          pngs,
+          {
+            docId: String(docId),
+            name: rec.name,
+            ownerId: rec.ownerId,
+          },
+          OCR_LANGS
+        );
+
+        console.log(
+          `[worker] ${rec.name}: OCR pass dpi=${dpi} pages=${pngs.length} textLen=${pass.textLen} meanConf=${pass.meanConf?.toFixed?.(
+            1
+          ) || "n/a"}`
+        );
+
+        const better =
+          pass.textLen > best.textLen ||
+          (pass.textLen === best.textLen && (pass.meanConf || 0) > (best.meanConf || 0));
+
+        if (better) {
+          best = {
+            docs: pass.docs,
+            textLen: pass.textLen,
+            meanConf: pass.meanConf || 0,
+            dpi,
+            pages: pngs.length,
+          };
+        }
       }
 
-      const ocrDocs = await ocrImagesToDocuments(pngs, {
-        docId: String(docId),
-        name: rec.name,
-        ownerId: rec.ownerId,
-      });
-
-      // If OCR gave something, prefer OCR docs
-      const ocrTextLen = ocrDocs.reduce(
-        (sum, d) => sum + (d.pageContent?.length || 0),
-        0
-      );
-
-      if (ocrTextLen > totalTextLen) {
-        baseDocs = ocrDocs;
-        console.log(
-          `[worker] ${rec.name}: OCR text=${ocrTextLen} chars (native=${totalTextLen}). Using OCR output.`
-        );
+      if (!best.docs || best.textLen <= 0) {
+        console.warn(`[worker] ${rec.name}: OCR fallback produced no usable text; keeping native.`);
       } else {
         console.log(
-          `[worker] ${rec.name}: OCR did not beat native extraction; keeping native text.`
+          `[worker] ${rec.name}: OCR chosen dpi=${best.dpi} pages=${best.pages} textLen=${best.textLen} meanConf=${best.meanConf.toFixed?.(
+            1
+          ) || "n/a"}`
         );
+        baseDocs = best.docs;
       }
     }
 
     // 3) Chunk + index
+    await job.updateProgress({ ownerId, docId: String(docId), status: "processing", pct: 70, stage: "chunking" });
     const { chunks } = await chunkAndIndex(
       rec.name,
       String(docId),
@@ -282,27 +313,37 @@ async function handleFileReady(job) {
       baseDocs,
       rec.collection
     );
+    await job.updateProgress({ ownerId, docId: String(docId), status: "processing", pct: 90, stage: "indexing" });
 
-    // 4) finalize
     await col.updateOne(
       { _id: docId },
       { $set: { status: "ready", pages: baseDocs.length } }
     );
-    console.log(
-      `✅ [file-ready] ${rec.name}: indexed ${chunks} chunks → ${rec.collection}`
-    );
 
-    return { ok: true, chunks, pages: baseDocs.length, usedOCR: shouldOCR };
+    console.log(`✅ [file-ready] ${rec.name}: indexed ${chunks} chunks → ${rec.collection}`);
+
+    // Return ownerId + docId so server QueueEvents 'completed' can notify the right user
+    return {
+      ownerId,
+      docId: String(docId),
+      ok: true,
+      chunks,
+      pages: baseDocs.length,
+      usedOCR: shouldOCR,
+    };
   } catch (err) {
     console.error("❌ [file-ready] Worker error:", err);
     await col.updateOne(
       { _id: docId },
       { $set: { status: "error", error: String(err?.message || err) } }
     );
+    try {
+      await job.updateProgress({ ownerId, docId: String(docId), status: "error", pct: 100, stage: "failed" });
+    } catch {}
     throw err;
   } finally {
     safeUnlink(tmpPdf);
-    safeRmdir(ocrDir);
+    safeRmdir(ocrRoot);
   }
 }
 
@@ -323,9 +364,18 @@ async function handleHardDelete(job) {
   }
 
   try {
+    // Let UI know it's deleting (SSE listener can show spinner)
+    try {
+      await job.updateProgress({ ownerId, docId: String(docId), status: "deleting", pct: 10, stage: "start" });
+    } catch {}
+
     const qc = new QdrantClient({ url: QDRANT_URL });
     await qc.deleteCollection(collection);
     console.log(`[hard-delete] Qdrant collection deleted: ${collection}`);
+    try {
+      await job.updateProgress({ ownerId, docId: String(docId), status: "deleting", pct: 50, stage: "vectors" });
+    } catch {}
+
   } catch (e) {
     console.log(`[hard-delete] Qdrant collection delete skipped/failed: ${collection}`, e?.message);
   }
@@ -334,6 +384,9 @@ async function handleHardDelete(job) {
     const gfs = await bucket();
     await gfs.delete(gridId);
     console.log(`[hard-delete] GridFS blob deleted: ${gridIdStr}`);
+    try {
+      await job.updateProgress({ ownerId, docId: String(docId), status: "deleting", pct: 75, stage: "blob" });
+    } catch {}
   } catch (e) {
     console.log(`[hard-delete] GridFS delete skipped/failed: ${gridIdStr}`, e?.message);
   }
@@ -341,6 +394,12 @@ async function handleHardDelete(job) {
   await col.deleteOne({ _id: docId, ownerId });
   console.log(`[hard-delete] Mongo record deleted: ${docIdStr}`);
 
+  try {
+    await job.updateProgress({ ownerId, docId: String(docId), status: "deleted", pct: 100, stage: "done" });
+  } catch {}
+
+  // IMPORTANT: don't return { ownerId, docId } here, to avoid server's generic
+  // 'completed' handler marking it as "ready". Keep payload minimal.
   return { deleted: true };
 }
 
@@ -370,16 +429,12 @@ const worker = new Worker(
   }
 );
 
-/* ----------------------------- Observability ---------------------------- */
-
 worker.on("completed", (job) => {
   console.log(`[worker] ✅ completed "${job.name}" #${job.id}`);
 });
 worker.on("failed", (job, err) => {
   console.error(`[worker] ❌ failed "${job?.name}" #${job?.id}:`, err?.message || err);
 });
-
-/* --------------------------- Graceful shutdown --------------------------- */
 
 process.on("SIGINT", async () => {
   console.log("Shutting down worker (SIGINT)...");

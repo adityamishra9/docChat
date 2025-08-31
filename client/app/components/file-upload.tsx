@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { Upload, Loader2 } from "lucide-react";
-import type { Doc } from "../page";
+import type { Doc } from "@/app/types";
 import { useApi, endpoints } from "../lib/api-client";
 
 type Props = {

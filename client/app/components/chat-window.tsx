@@ -12,7 +12,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import type { Doc, Message } from "../page";
+import type { Doc, Message } from "@/app/types";
 import { Alert } from "./ui/alert";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";

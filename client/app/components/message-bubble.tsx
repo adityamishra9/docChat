@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import type { Message } from "../page";
+import type { Message } from "@/app/types";
 
 export default function MessageBubble({ msg }: { msg: Message }) {
   const isUser = msg.role === "user";
