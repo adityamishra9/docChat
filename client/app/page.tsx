@@ -2,12 +2,20 @@
 
 import * as React from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Menu, PlusCircle, Search } from "lucide-react";
-import FileUpload from "./components/file-upload";
+import { Menu, PlusCircle } from "lucide-react";
 import SidebarDocs from "./components/sidebar-docs";
+import FileUpload from "./components/file-upload";
 import ChatWindow from "./components/chat-window";
-import { Alert } from "./components/ui/alert";
 import UploadModal from "./components/ui/upload-modal";
+import { Alert } from "./components/ui/alert";
+
+import CommandPalette from "./components/command-palette";
+import StatusChip from "./components/ui/status-chip"; // used inside palette, tree-shake ok
+import EmptyState from "./components/empty-state";
+
+import { useToasts, ToastViewport } from "./components/ui/use-toasts";
+import { useLocalStorageState } from "./lib/use-localstorage";
+import { useCmdK } from "./lib/use-cmdk";
 import { useAuth, SignedIn, SignedOut, SignInButton } from "@clerk/nextjs";
 
 export type Doc = {
@@ -18,253 +26,16 @@ export type Doc = {
   status?: "queued" | "processing" | "ready" | "error";
   createdAt?: string;
 };
-
 export type Message = {
   id: string;
   role: "user" | "assistant";
   content: string;
   ts: number;
-  /** when true, render a typing bubble and hide actions */
   pending?: boolean;
 };
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
 
-/* ---------------------------- tiny toast system ---------------------------- */
-type Toast = { id: string; text: string };
-function useToasts() {
-  const [toasts, setToasts] = React.useState<Toast[]>([]);
-  const push = (text: string) => {
-    const id = crypto.randomUUID();
-    setToasts((t) => [...t, { id, text }]);
-    setTimeout(() => {
-      setToasts((t) => t.filter((x) => x.id !== id));
-    }, 2600);
-  };
-  return { toasts, push };
-}
-
-/* --------------------------- localStorage helpers -------------------------- */
-function useLocalStorageState<T>(key: string, initial: T) {
-  const [state, setState] = React.useState<T>(() => {
-    try {
-      const raw = localStorage.getItem(key);
-      return raw ? (JSON.parse(raw) as T) : initial;
-    } catch {
-      return initial;
-    }
-  });
-  React.useEffect(() => {
-    try {
-      localStorage.setItem(key, JSON.stringify(state));
-    } catch {}
-  }, [key, state]);
-  return [state, setState] as const;
-}
-
-/* ------------------------------ Command Bar ------------------------------- */
-function useCmdK(toggle: () => void) {
-  React.useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const isInput =
-        e.target instanceof HTMLInputElement ||
-        e.target instanceof HTMLTextAreaElement ||
-        (e.target as HTMLElement)?.isContentEditable;
-      if (isInput) return;
-
-      const metaK = (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k";
-      if (metaK) {
-        e.preventDefault();
-        toggle();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [toggle]);
-}
-
-type CommandPaletteProps = {
-  isOpen: boolean;
-  onClose: () => void;
-  docs: Doc[];
-  activeId: string | null;
-  onSelectDoc: (id: string) => void;
-};
-
-function CommandPalette({
-  isOpen,
-  onClose,
-  docs,
-  activeId,
-  onSelectDoc,
-}: CommandPaletteProps) {
-  const inputRef = React.useRef<HTMLInputElement | null>(null);
-  const listRef = React.useRef<HTMLUListElement | null>(null);
-  const [q, setQ] = React.useState("");
-  const [idx, setIdx] = React.useState(0);
-
-  React.useEffect(() => {
-    if (isOpen) {
-      const prev = document.body.style.overflow;
-      document.body.style.overflow = "hidden";
-      setTimeout(() => inputRef.current?.focus(), 0);
-      return () => {
-        document.body.style.overflow = prev;
-      };
-    }
-  }, [isOpen]);
-
-  const results = React.useMemo(() => {
-    const s = q.trim().toLowerCase();
-    const filtered = !s
-      ? docs
-      : docs.filter((d) => d.name.toLowerCase().includes(s));
-    return filtered.sort((a, b) =>
-      a.id === activeId ? -1 : b.id === activeId ? 1 : 0
-    );
-  }, [docs, q, activeId]);
-
-  React.useEffect(() => {
-    if (!isOpen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        onClose();
-      } else if (e.key === "ArrowDown") {
-        e.preventDefault();
-        setIdx((i) => Math.min(i + 1, Math.max(0, results.length - 1)));
-        scrollIntoView();
-      } else if (e.key === "ArrowUp") {
-        e.preventDefault();
-        setIdx((i) => Math.max(i - 1, 0));
-        scrollIntoView();
-      } else if (e.key === "Enter") {
-        e.preventDefault();
-        const pick = results[idx];
-        if (pick) {
-          onSelectDoc(pick.id);
-          onClose();
-        }
-      }
-    };
-    const scrollIntoView = () => {
-      const item = listRef.current?.querySelector<HTMLLIElement>(
-        `li[data-idx="${idx}"]`
-      );
-      item?.scrollIntoView({ block: "nearest" });
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [isOpen, idx, results, onClose, onSelectDoc]);
-
-  if (!isOpen) return null;
-
-  return (
-    <div
-      className="fixed inset-0 z-[60] bg-black/50 backdrop-blur-sm"
-      role="dialog"
-      aria-modal="true"
-      aria-label="Command Palette"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div className="mx-auto mt-24 w-full max-w-xl rounded-2xl border border-white/10 bg-white/8 backdrop-blur-xl shadow-2xl">
-        <div className="flex items-center gap-2 border-b border-white/10 px-3 py-2">
-          <Search size={16} className="text-white/70" />
-          <input
-            ref={inputRef}
-            value={q}
-            onChange={(e) => {
-              setQ(e.target.value);
-              setIdx(0);
-            }}
-            placeholder="Search documents…"
-            className="w-full bg-transparent outline-none text-white placeholder:text-white/50 text-sm py-2"
-            aria-label="Search documents"
-          />
-          <kbd className="ml-auto text-[10px] px-1.5 py-0.5 rounded bg-white/10 text-white/70 border border-white/10">
-            ⌘K
-          </kbd>
-        </div>
-
-        <ul
-          ref={listRef}
-          className="max-h-80 overflow-auto p-2"
-          role="listbox"
-          aria-label="Documents"
-        >
-          {results.length === 0 ? (
-            <li className="px-3 py-8 text-center text-white/60">
-              No matching documents
-            </li>
-          ) : (
-            results.map((d, i) => (
-              <li
-                key={d.id}
-                data-idx={i}
-                role="option"
-                aria-selected={i === idx}
-                className={[
-                  "flex items-center justify-between gap-3 rounded-lg px-3 py-2 cursor-pointer",
-                  i === idx
-                    ? "bg-white/15 border border-white/20"
-                    : "hover:bg-white/10",
-                ].join(" ")}
-                onMouseEnter={() => setIdx(i)}
-                onClick={() => {
-                  onSelectDoc(d.id);
-                  onClose();
-                }}
-              >
-                <div className="min-w-0">
-                  <p className="truncate text-sm text-white">{d.name}</p>
-                  <p className="text-[11px] text-white/60">
-                    {d.pages ? `${d.pages} pages` : "PDF"}
-                    {d.createdAt
-                      ? ` • ${new Date(d.createdAt).toLocaleString()}`
-                      : ""}
-                  </p>
-                </div>
-                <StatusChip status={d.status ?? "ready"} />
-              </li>
-            ))
-          )}
-        </ul>
-      </div>
-    </div>
-  );
-}
-
-function StatusChip({
-  status,
-}: {
-  status: NonNullable<Doc["status"]> | "ready";
-}) {
-  const map: Record<string, string> = {
-    queued: "bg-amber-400/15 text-amber-200 border border-amber-400/30",
-    processing: "bg-blue-400/15 text-blue-200 border border-blue-400/30",
-    ready: "bg-emerald-400/15 text-emerald-200 border border-emerald-400/30",
-    error: "bg-rose-400/15 text-rose-200 border border-rose-400/30",
-  };
-  const label =
-    status === "queued"
-      ? "Queued"
-      : status === "processing"
-        ? "Processing"
-        : status === "ready"
-          ? "Ready"
-          : "Error";
-  return (
-    <span
-      className={`shrink-0 text-[11px] px-2 py-0.5 rounded-full ${map[status]}`}
-    >
-      {label}
-    </span>
-  );
-}
-
-/* --------------------------------- Page ----------------------------------- */
 export default function AppHome() {
   const router = useRouter();
   const search = useSearchParams();
@@ -275,48 +46,38 @@ export default function AppHome() {
   const [loadingDocs, setLoadingDocs] = React.useState(true);
   const [errorDocs, setErrorDocs] = React.useState<string | null>(null);
 
-  // Persist conversations per doc in localStorage
-  const [conversations, setConversations] = useLocalStorageState<
-    Record<string, Message[]>
-  >("docchat:conversations", {});
+  const [conversations, setConversations] = useLocalStorageState<Record<string, Message[]>>(
+    "docchat:conversations",
+    {}
+  );
 
-  // Active docId synced with URL (?doc=)
   const [activeId, setActiveId] = React.useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = React.useState(false);
-
-  // Command palette open
   const [cmdOpen, setCmdOpen] = React.useState(false);
   useCmdK(() => setCmdOpen((s) => !s));
 
-  // drag-over visual state for empty area
   const [dragOver, setDragOver] = React.useState(false);
 
-  // ---- Resizable sidebar state (desktop only) ----
+  // Sidebar width (desktop)
   const SIDEBAR_W_KEY = "docchat:sidebarWidth";
   const MIN_W = 240;
   const MAX_W = 520;
   const DEFAULT_W = 320;
-
   const [sidebarWidth, setSidebarWidth] = React.useState<number>(DEFAULT_W);
-
   React.useEffect(() => {
     try {
       const raw = localStorage.getItem(SIDEBAR_W_KEY);
       if (raw) {
         const n = Number(raw);
-        if (Number.isFinite(n)) {
-          setSidebarWidth(Math.min(MAX_W, Math.max(MIN_W, n)));
-        }
+        if (Number.isFinite(n)) setSidebarWidth(Math.min(MAX_W, Math.max(MIN_W, n)));
       }
     } catch {}
   }, []);
-
   React.useEffect(() => {
     try {
       localStorage.setItem(SIDEBAR_W_KEY, String(sidebarWidth));
     } catch {}
   }, [sidebarWidth]);
-
   const dragRef = React.useRef<{ startX: number; startW: number } | null>(null);
   const onDragStart = (e: React.MouseEvent) => {
     dragRef.current = { startX: e.clientX, startW: sidebarWidth };
@@ -326,10 +87,7 @@ export default function AppHome() {
     const onMove = (e: MouseEvent) => {
       if (!dragRef.current) return;
       const { startX, startW } = dragRef.current;
-      const next = Math.min(
-        MAX_W,
-        Math.max(MIN_W, startW + (e.clientX - startX))
-      );
+      const next = Math.min(MAX_W, Math.max(MIN_W, startW + (e.clientX - startX)));
       setSidebarWidth(next);
     };
     const onUp = () => {
@@ -342,28 +100,26 @@ export default function AppHome() {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, []);
-  // ------------------------------------------------
+  }, [MIN_W, MAX_W]);
 
-  // pick doc from URL first
+  // URL → activeId
   React.useEffect(() => {
     const q = search.get("doc");
     if (q) setActiveId(q);
   }, [search]);
 
-  /* ---------------------------- Auth fetch shim ---------------------------- */
+  // authFetch
   const authFetch = React.useCallback(
     async (url: string, init: RequestInit = {}) => {
       const token = await getToken?.();
       const headers = new Headers(init.headers || {});
       if (token) headers.set("Authorization", `Bearer ${token}`);
-      // We always send JSON unless a FormData body is passed.
       return fetch(url, { ...init, headers });
     },
     [getToken]
   );
 
-  // fetch docs
+  // docs list
   const fetchDocs = React.useCallback(async () => {
     try {
       setErrorDocs(null);
@@ -380,13 +136,10 @@ export default function AppHome() {
       }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json: Doc[] = await res.json();
-
       setDocs(json || []);
-
       setActiveId((curr) => {
         if (!curr) return null;
-        const stillExists = (json || []).some((d) => d.id === curr);
-        return stillExists ? curr : null;
+        return (json || []).some((d) => d.id === curr) ? curr : null;
       });
     } catch {
       setErrorDocs("Couldn’t load your library. Check the server & try again.");
@@ -399,7 +152,7 @@ export default function AppHome() {
     fetchDocs();
   }, [fetchDocs]);
 
-  // background polling while any doc not ready
+  // poll while processing
   React.useEffect(() => {
     const needsPoll = docs.some((d) => d.status && d.status !== "ready");
     if (!needsPoll) return;
@@ -409,9 +162,8 @@ export default function AppHome() {
 
   const selectDoc = (id: string) => setActiveId(id);
 
-  /* ------------------------- Upload plumbing (no modal) ------------------------- */
+  // uploads
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
-
   async function uploadPdf(file: File) {
     if (!file) return;
     if (file.type !== "application/pdf") {
@@ -421,33 +173,22 @@ export default function AppHome() {
     try {
       const fd = new FormData();
       fd.append("pdf", file);
-
       const token = await getToken?.();
       const headers = new Headers();
       if (token) headers.set("Authorization", `Bearer ${token}`);
-
-      const res = await fetch(`${API_BASE}/upload/pdf`, {
-        method: "POST",
-        body: fd,
-        headers,
-      });
-
+      const res = await fetch(`${API_BASE}/upload/pdf`, { method: "POST", body: fd, headers });
       if (res.status === 401 || res.status === 403) {
         push("Please sign in to upload.");
         return;
       }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
       const json = await res.json();
-      window.dispatchEvent(
-        new CustomEvent("docchat:uploaded", { detail: json?.uploaded || [] })
-      );
+      window.dispatchEvent(new CustomEvent("docchat:uploaded", { detail: json?.uploaded || [] }));
       push(`Uploaded “${file.name}”. Processing…`);
     } catch {
       push("Upload failed. Please try again.");
     }
   }
-
   function openFilePicker() {
     if (!isSignedIn) {
       push("Please sign in to upload.");
@@ -457,7 +198,7 @@ export default function AppHome() {
   }
   const [showUploadModal, setShowUploadModal] = React.useState(false);
 
-  // keyboard shortcuts: L (library), U (upload)
+  // key shortcuts: L / U
   React.useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
@@ -469,15 +210,14 @@ export default function AppHome() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // allow other components to open the upload modal
+  // allow global open-upload events
   React.useEffect(() => {
     const open = () => setShowUploadModal(true);
     window.addEventListener("docchat:open-upload", open as EventListener);
-    return () =>
-      window.removeEventListener("docchat:open-upload", open as EventListener);
+    return () => window.removeEventListener("docchat:open-upload", open as EventListener);
   }, []);
 
-  // pick up uploaded docs from anywhere
+  // receive uploaded docs
   const onUploaded = (uploaded: Doc[]) => {
     setDocs((prev) => {
       const next = [...uploaded, ...prev];
@@ -490,65 +230,35 @@ export default function AppHome() {
       const detail = (e as CustomEvent).detail as Doc[] | undefined;
       if (detail?.length) onUploaded(detail);
     };
-    window.addEventListener(
-      "docchat:uploaded",
-      onUploadedEvent as EventListener
-    );
-    return () =>
-      window.removeEventListener(
-        "docchat:uploaded",
-        onUploadedEvent as EventListener
-      );
+    window.addEventListener("docchat:uploaded", onUploadedEvent as EventListener);
+    return () => window.removeEventListener("docchat:uploaded", onUploadedEvent as EventListener);
   }, []);
 
   React.useEffect(() => {
     if (activeId) router.replace(`?doc=${encodeURIComponent(activeId)}`);
   }, [activeId, router]);
 
-  /* ---------------------------------- Chat ---------------------------------- */
+  // chat send
   const sendMessage = async (docId: string, content: string) => {
     const addMsg = (m: Message) =>
-      setConversations((prev) => ({
-        ...prev,
-        [docId]: [...(prev[docId] || []), m],
-      }));
-
+      setConversations((prev) => ({ ...prev, [docId]: [...(prev[docId] || []), m] }));
     const replaceMsg = (id: string, patch: Partial<Message>) =>
       setConversations((prev) => {
         const list = prev[docId] || [];
-        return {
-          ...prev,
-          [docId]: list.map((m) => (m.id === id ? { ...m, ...patch } : m)),
-        };
+        return { ...prev, [docId]: list.map((m) => (m.id === id ? { ...m, ...patch } : m)) };
       });
 
-    const userMsg: Message = {
-      id: crypto.randomUUID(),
-      role: "user",
-      content,
-      ts: Date.now(),
-    };
+    const userMsg: Message = { id: crypto.randomUUID(), role: "user", content, ts: Date.now() };
     addMsg(userMsg);
 
-    // assistant typing placeholder (renders animated dots)
     const placeholderId = crypto.randomUUID();
-    addMsg({
-      id: placeholderId,
-      role: "assistant",
-      content: "",
-      pending: true,
-      ts: Date.now(),
-    });
+    addMsg({ id: placeholderId, role: "assistant", content: "", pending: true, ts: Date.now() });
 
     try {
       const res = await authFetch(`${API_BASE}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          docId,
-          message: content,
-          sessionId: `doc-${docId}`,
-        }),
+        body: JSON.stringify({ docId, message: content, sessionId: `doc-${docId}` }),
       });
 
       if (res.status === 401 || res.status === 403) {
@@ -560,28 +270,23 @@ export default function AppHome() {
         push("You’re signed out.");
         return;
       }
-
       if (res.status === 409) {
         replaceMsg(placeholderId, {
           pending: false,
-          content:
-            "This document is still processing. I’ll be ready once it’s marked ready.",
+          content: "This document is still processing. I’ll be ready once it’s marked ready.",
           ts: Date.now(),
         });
         return;
       }
-
       if (!res.ok) {
         replaceMsg(placeholderId, {
           pending: false,
-          content:
-            "Hmm, I couldn't reach the server. Please try again in a moment.",
+          content: "Hmm, I couldn't reach the server. Please try again in a moment.",
           ts: Date.now(),
         });
         push("Chat server unreachable.");
         return;
       }
-
       const json = await res.json();
       replaceMsg(placeholderId, {
         pending: false,
@@ -591,8 +296,7 @@ export default function AppHome() {
     } catch {
       replaceMsg(placeholderId, {
         pending: false,
-        content:
-          "I hit a network error. Check your backend URL or internet connection.",
+        content: "I hit a network error. Check your backend URL or internet connection.",
         ts: Date.now(),
       });
       push("Network error while chatting.");
@@ -601,54 +305,34 @@ export default function AppHome() {
 
   const activeDoc = docs.find((d) => d.id === activeId) || null;
 
-  // new chat
+  // new chat event
   React.useEffect(() => {
     function onNewChat() {
       setActiveId(null);
       router.replace("/");
     }
     window.addEventListener("docchat:new-chat", onNewChat as EventListener);
-    return () =>
-      window.removeEventListener(
-        "docchat:new-chat",
-        onNewChat as EventListener
-      );
+    return () => window.removeEventListener("docchat:new-chat", onNewChat as EventListener);
   }, [router]);
 
+  // focus chat with Enter (global)
   React.useEffect(() => {
     const onEnter = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
-      const typing = target?.closest("input, textarea, [contenteditable=true]");
-      if (typing) return;
-
+      if (target?.closest("input, textarea, [contenteditable=true]")) return;
       if (e.key === "Enter") {
         e.preventDefault();
-        const input = document.getElementById(
-          "chat-input"
-        ) as HTMLTextAreaElement | null;
-        input?.focus();
+        (document.getElementById("chat-input") as HTMLTextAreaElement | null)?.focus();
       }
     };
-
     window.addEventListener("keydown", onEnter);
     return () => window.removeEventListener("keydown", onEnter);
   }, []);
 
   return (
     <div className="max-w-7xl mx-auto px-4 pb-8 pt-6">
-      {/* toasts */}
-      <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 space-y-2">
-        {toasts.map((t) => (
-          <div
-            key={t.id}
-            className="rounded-xl border border-white/10 bg-white/10 backdrop-blur-xl px-4 py-2 text-white shadow-2xl"
-          >
-            {t.text}
-          </div>
-        ))}
-      </div>
+      <ToastViewport toasts={toasts} />
 
-      {/* sign-in prompt (only when signed out) */}
       <SignedOut>
         <div className="mb-4">
           <Alert
@@ -662,14 +346,11 @@ export default function AppHome() {
               </SignInButton>
             }
           >
-            <div className="mt-1">
-              Sign in with Clerk to view your documents, upload PDFs, and chat.
-            </div>
+            <div className="mt-1">Sign in with Clerk to view your documents, upload PDFs, and chat.</div>
           </Alert>
         </div>
       </SignedOut>
 
-      {/* upload modal */}
       <UploadModal
         open={showUploadModal}
         onClose={() => setShowUploadModal(false)}
@@ -679,7 +360,6 @@ export default function AppHome() {
         }}
       />
 
-      {/* hidden global picker */}
       <input
         ref={fileInputRef}
         id="global-upload"
@@ -695,7 +375,6 @@ export default function AppHome() {
         }}
       />
 
-      {/* Command Palette */}
       <CommandPalette
         isOpen={cmdOpen}
         onClose={() => setCmdOpen(false)}
@@ -748,9 +427,7 @@ export default function AppHome() {
                 <FileUpload onUploaded={onUploaded} />
               </SignedIn>
               <SignedOut>
-                <div className="text-xs text-white/60">
-                  Sign in to enable uploads.
-                </div>
+                <div className="text-xs text-white/60">Sign in to enable uploads.</div>
               </SignedOut>
             </div>
           </div>
@@ -775,19 +452,8 @@ export default function AppHome() {
             setDragOver(true);
           }}
           onDragLeave={() => !activeDoc && setDragOver(false)}
-          onDrop={async (e) => {
-            if (activeDoc) return;
-            e.preventDefault();
-            setDragOver(false);
-            const file = e.dataTransfer.files?.[0];
-            if (file) await uploadPdf(file);
-          }}
         >
-          {loadingDocs && (
-            <div className="p-6 animate-pulse text-white/70">
-              Loading your library…
-            </div>
-          )}
+          {loadingDocs && <div className="p-6 animate-pulse text-white/70">Loading your library…</div>}
 
           {!loadingDocs && errorDocs && (
             <div className="p-6">
@@ -813,9 +479,7 @@ export default function AppHome() {
                 }
               >
                 <div className="mt-1">
-                  {errorDocs} Ensure{" "}
-                  <code className="text-white/90">NEXT_PUBLIC_API_BASE</code> is
-                  correct.
+                  {errorDocs} Ensure <code className="text-white/90">NEXT_PUBLIC_API_BASE</code> is correct.
                 </div>
               </Alert>
             </div>
@@ -831,113 +495,12 @@ export default function AppHome() {
                   onSend={(text) => sendMessage(activeDoc.id, text)}
                 />
               ) : (
-                <div className="relative h-full w-full p-6 flex flex-col items-center justify-center text-center">
-                  <div className="pointer-events-none absolute inset-0 -z-10">
-                    <div
-                      className="absolute left-1/2 top-1/3 -translate-x-1/2 h-72 w-72 rounded-full bg-emerald-500/10 blur-3xl transition-opacity"
-                      style={{ opacity: dragOver ? 0.5 : 1 }}
-                    />
-                    <div className="absolute right-1/4 bottom-10 h-56 w-56 rounded-full bg-sky-500/10 blur-2xl" />
-                  </div>
-
-                  <div className="mb-5 inline-flex h-14 w-14 items-center justify-center rounded-2xl border border-white/10 bg-white/5 backdrop-blur-xl shadow-xl">
-                    <span className="text-3xl">📄</span>
-                  </div>
-
-                  <h2 className="text-2xl sm:text-3xl font-semibold text-white">
-                    Start a Conversation
-                  </h2>
-                  <p className="mt-3 text-white/70 max-w-md">
-                    {dragOver ? (
-                      "Release to upload your PDF."
-                    ) : (
-                      <>
-                        Drop a PDF here to begin, press{" "}
-                        <kbd className="px-1.5 py-0.5 rounded bg-white/10 text-white/85 text-[11px] border border-white/15">
-                          U
-                        </kbd>{" "}
-                        to open the file picker, or use the button below.
-                      </>
-                    )}
-                  </p>
-
-                  <div
-                    className={[
-                      "mt-6 group rounded-2xl border-2 border-dashed px-6 py-4 max-w-md w-full transition-colors",
-                      dragOver
-                        ? "border-emerald-400 bg-emerald-400/10"
-                        : "border-white/15 hover:border-white/25 bg-white/5 hover:bg-white/10",
-                    ].join(" ")}
-                  >
-                    <div className="flex items-center justify-center gap-3 text-white/75">
-                      <svg
-                        width="18"
-                        height="18"
-                        viewBox="0 0 24 24"
-                        className="opacity-80"
-                        aria-hidden="true"
-                      >
-                        <path
-                          fill="currentColor"
-                          d="M12 2l5 5h-3v6h-4V7H7l5-5zm8 18H4v-6H2v8h20v-8h-2v6z"
-                        />
-                      </svg>
-                      <span className="text-sm">
-                        Drag & drop your PDF anywhere in this area
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className="mt-6">
-                    <button
-                      onClick={openFilePicker}
-                      className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-emerald-500/90 hover:bg-emerald-500 text-black font-medium shadow-2xl shadow-emerald-500/20"
-                    >
-                      <svg
-                        width="18"
-                        height="18"
-                        viewBox="0 0 24 24"
-                        aria-hidden="true"
-                      >
-                        <path
-                          d="M12 5v14m-7-7h14"
-                          stroke="currentColor"
-                          strokeWidth="2"
-                          strokeLinecap="round"
-                          fill="none"
-                        />
-                      </svg>
-                      Upload a PDF
-                    </button>
-                  </div>
-
-                  <div className="mt-4 flex flex-wrap items-center justify-center gap-2 text-[11px] text-white/55">
-                    <span className="inline-flex items-center gap-1">
-                      <kbd className="px-1 rounded bg-white/10 border border-white/10">
-                        ⌘K
-                      </kbd>{" "}
-                      switch documents
-                    </span>
-                    <span>•</span>
-                    <span className="inline-flex items-center gap-1">
-                      <kbd className="px-1 rounded bg-white/10 border border-white/10">
-                        Enter
-                      </kbd>{" "}
-                      send
-                    </span>
-                    <span>•</span>
-                    <span className="inline-flex items-center gap-1">
-                      <kbd className="px-1 rounded bg-white/10 border border-white/10">
-                        Shift
-                      </kbd>
-                      +
-                      <kbd className="px-1 rounded bg-white/10 border border-white/10">
-                        Enter
-                      </kbd>{" "}
-                      newline
-                    </span>
-                  </div>
-                </div>
+                <EmptyState
+                  dragOver={dragOver}
+                  activeDocExists={!!activeDoc}
+                  onOpenFilePicker={openFilePicker}
+                  onDropFile={uploadPdf}
+                />
               )}
             </>
           )}
@@ -946,12 +509,7 @@ export default function AppHome() {
 
       {/* Mobile layout */}
       <div className="lg:hidden grid lg:grid-cols-[320px_1fr] gap-4">
-        <aside
-          className={[
-            "fixed inset-0 lg:static lg:inset-auto",
-            sidebarOpen ? "z-50" : "pointer-events-none -z-10",
-          ].join(" ")}
-        >
+        <aside className={["fixed inset-0 lg:static lg:inset-auto", sidebarOpen ? "z-50" : "pointer-events-none -z-10"].join(" ")}>
           <div className="h-full w-full">
             <div
               className={`absolute inset-0 bg-black/50 ${sidebarOpen ? "" : "hidden"}`}
@@ -984,9 +542,7 @@ export default function AppHome() {
                   <FileUpload onUploaded={onUploaded} />
                 </SignedIn>
                 <SignedOut>
-                  <div className="text-xs text-white/60">
-                    Sign in to enable uploads.
-                  </div>
+                  <div className="text-xs text-white/60">Sign in to enable uploads.</div>
                 </SignedOut>
               </div>
             </div>
