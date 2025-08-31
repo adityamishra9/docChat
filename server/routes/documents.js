@@ -10,8 +10,11 @@ const r = Router();
 
 /** GET /documents */
 r.get("/", ensureAuthed, async (req, res) => {
-  const userId = req.auth?.userId;
-  const limit = Math.min(Math.max(parseInt(req.query.limit?.toString() || "20", 10), 1), 100);
+  const userId = req.auth()?.userId;
+  const limit = Math.min(
+    Math.max(parseInt(req.query.limit?.toString() || "20", 10), 1),
+    100
+  );
   const status = req.query.status?.toString();
   const includeDeleted = String(req.query.includeDeleted || "false") === "true";
   const cursor = req.query.cursor?.toString();
@@ -27,14 +30,19 @@ r.get("/", ensureAuthed, async (req, res) => {
       Object.assign(query, {
         $or: [
           { createdAt: { $lt: parsed.createdAt } },
-          { createdAt: parsed.createdAt, _id: { $lt: new ObjectId(parsed.id) } },
+          {
+            createdAt: parsed.createdAt,
+            _id: { $lt: new ObjectId(parsed.id) },
+          },
         ],
       });
     }
   }
 
   const docs = await col
-    .find(query, { projection: { name: 1, size: 1, pages: 1, status: 1, createdAt: 1 } })
+    .find(query, {
+      projection: { name: 1, size: 1, pages: 1, status: 1, createdAt: 1 },
+    })
     .sort({ createdAt: -1, _id: -1 })
     .limit(limit + 1)
     .toArray();
@@ -54,11 +62,20 @@ r.get("/", ensureAuthed, async (req, res) => {
 
 /** GET /documents/:id */
 r.get("/:id", ensureAuthed, async (req, res) => {
-  const userId = req.auth?.userId;
+  const userId = req.auth()?.userId;
   const col = (await db()).collection("documents");
   const rec = await col.findOne(
     { _id: new ObjectId(req.params.id), ownerId: userId },
-    { projection: { name: 1, size: 1, pages: 1, status: 1, createdAt: 1, deletedAt: 1 } }
+    {
+      projection: {
+        name: 1,
+        size: 1,
+        pages: 1,
+        status: 1,
+        createdAt: 1,
+        deletedAt: 1,
+      },
+    }
   );
   if (!rec) return res.status(404).json({ error: "Not found" });
   res.json({
@@ -74,19 +91,23 @@ r.get("/:id", ensureAuthed, async (req, res) => {
 
 /** GET /documents/:id/status */
 r.get("/:id/status", ensureAuthed, async (req, res) => {
-  const userId = req.auth?.userId;
+  const userId = req.auth()?.userId;
   const col = (await db()).collection("documents");
   const rec = await col.findOne(
     { _id: new ObjectId(req.params.id), ownerId: userId },
     { projection: { status: 1, pages: 1 } }
   );
   if (!rec) return res.status(404).json({ error: "Not found" });
-  res.json({ id: String(req.params.id), status: rec.status || null, pages: rec.pages ?? null });
+  res.json({
+    id: String(req.params.id),
+    status: rec.status || null,
+    pages: rec.pages ?? null,
+  });
 });
 
 /** DELETE /documents/:id (soft default; hard if ?hard=true) */
 r.delete("/:id", ensureAuthed, async (req, res) => {
-  const userId = req.auth?.userId;
+  const userId = req.auth()?.userId;
   const hard = String(req.query.hard || "false") === "true";
   const _id = new ObjectId(req.params.id);
 
@@ -95,16 +116,32 @@ r.delete("/:id", ensureAuthed, async (req, res) => {
   if (!doc) return res.status(404).json({ error: "Not found" });
 
   if (!hard) {
-    await col.updateOne({ _id, ownerId: userId }, { $set: { deletedAt: new Date(), status: "deleted" } });
+    await col.updateOne(
+      { _id, ownerId: userId },
+      { $set: { deletedAt: new Date(), status: "deleted" } }
+    );
     return res.json({ ok: true, mode: "soft" });
   }
 
-  await col.updateOne({ _id, ownerId: userId }, { $set: { status: "deleting", deletingAt: new Date() } });
+  await col.updateOne(
+    { _id, ownerId: userId },
+    { $set: { status: "deleting", deletingAt: new Date() } }
+  );
 
   await queue.add(
     "hard-delete",
-    { docId: String(_id), ownerId: userId, gridId: String(doc.gridId), collection: doc.collection },
-    { removeOnComplete: 100, removeOnFail: 100, attempts: 3, backoff: { type: "exponential", delay: 2000 } }
+    {
+      docId: String(_id),
+      ownerId: userId,
+      gridId: String(doc.gridId),
+      collection: doc.collection,
+    },
+    {
+      removeOnComplete: 100,
+      removeOnFail: 100,
+      attempts: 3,
+      backoff: { type: "exponential", delay: 2000 },
+    }
   );
 
   res.json({ ok: true, mode: "hard", enqueued: true });
@@ -112,7 +149,7 @@ r.delete("/:id", ensureAuthed, async (req, res) => {
 
 /** DELETE /documents (bulk) — hard by default; soft if ?hard=false) */
 r.delete("/", ensureAuthed, async (req, res) => {
-  const userId = req.auth?.userId;
+  const userId = req.auth()?.userId;
   const hard = String(req.query.hard || "true") === "true";
   const col = (await db()).collection("documents");
 
@@ -121,11 +158,19 @@ r.delete("/", ensureAuthed, async (req, res) => {
       { ownerId: userId, deletedAt: { $exists: false } },
       { $set: { deletedAt: new Date(), status: "deleted" } }
     );
-    return res.json({ ok: true, mode: "soft", matchedCount: r1.matchedCount, modifiedCount: r1.modifiedCount });
+    return res.json({
+      ok: true,
+      mode: "soft",
+      matchedCount: r1.matchedCount,
+      modifiedCount: r1.modifiedCount,
+    });
   }
 
   const docs = await col
-    .find({ ownerId: userId, deletedAt: { $exists: false } }, { projection: { _id: 1, gridId: 1, collection: 1 } })
+    .find(
+      { ownerId: userId, deletedAt: { $exists: false } },
+      { projection: { _id: 1, gridId: 1, collection: 1 } }
+    )
     .toArray();
 
   if (docs.length === 0) {
@@ -141,13 +186,28 @@ r.delete("/", ensureAuthed, async (req, res) => {
     docs.map((doc) =>
       queue.add(
         "hard-delete",
-        { docId: String(doc._id), ownerId: userId, gridId: String(doc.gridId), collection: doc.collection },
-        { removeOnComplete: 100, removeOnFail: 100, attempts: 3, backoff: { type: "exponential", delay: 2000 } }
+        {
+          docId: String(doc._id),
+          ownerId: userId,
+          gridId: String(doc.gridId),
+          collection: doc.collection,
+        },
+        {
+          removeOnComplete: 100,
+          removeOnFail: 100,
+          attempts: 3,
+          backoff: { type: "exponential", delay: 2000 },
+        }
       )
     )
   );
 
-  res.json({ ok: true, mode: "hard", enqueued: docs.length, deletedCount: docs.length });
+  res.json({
+    ok: true,
+    mode: "hard",
+    enqueued: docs.length,
+    deletedCount: docs.length,
+  });
 });
 
 export default r;

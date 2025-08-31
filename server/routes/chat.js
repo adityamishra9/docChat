@@ -13,15 +13,25 @@ const r = Router();
 r.post("/:docId", ensureAuthed, async (req, res) => {
   const userId = req.auth()?.userId;
   const docId = req.params.docId;
-  const question = (req.body.message ?? req.body.query ?? req.body.content ?? "").trim();
+  const question = (
+    req.body.message ??
+    req.body.query ??
+    req.body.content ??
+    ""
+  ).trim();
   const topK = Math.min(Math.max(parseInt(req.body.topK ?? "5", 10), 1), 20);
-  if (!docId || !question) return res.status(400).json({ error: "Missing docId or message" });
+  if (!docId || !question)
+    return res.status(400).json({ error: "Missing docId or message" });
 
   try {
     const col = (await db()).collection("documents");
-    const rec = await col.findOne({ _id: new ObjectId(docId), ownerId: userId });
+    const rec = await col.findOne({
+      _id: new ObjectId(docId),
+      ownerId: userId,
+    });
     if (!rec) return res.status(404).json({ error: "Document not found" });
-    if (rec.status !== "ready") return res.status(409).json({ error: "Document not ready" });
+    if (rec.status !== "ready")
+      return res.status(409).json({ error: "Document not ready" });
 
     const vectorStore = await vectorStoreForCollection(rec.collection);
     const results = await vectorStore.similaritySearch(question, topK);
@@ -43,7 +53,9 @@ r.post("/:docId", ensureAuthed, async (req, res) => {
     });
   } catch (err) {
     console.error("Chat failed:", err);
-    res.status(500).json({ error: "Chat failed", detail: String(err?.message || err) });
+    res
+      .status(500)
+      .json({ error: "Chat failed", detail: String(err?.message || err) });
   }
 });
 
