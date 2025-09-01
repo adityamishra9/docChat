@@ -59,6 +59,7 @@ docker-compose.override.yml
 /client/out/
 /client/.cache/
 /client/.clerk/
+/client/.env.local/
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 6) Secret files and env

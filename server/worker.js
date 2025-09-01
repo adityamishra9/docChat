@@ -1,9 +1,4 @@
 // server/worker.js
-// -----------------------------------------------------------------------------
-// DocChat Worker (BullMQ) - Refactored
-// - Same features, same libs, cleaner structure
-// -----------------------------------------------------------------------------
-
 import "dotenv/config";
 import { Worker } from "bullmq";
 import { ObjectId } from "mongodb";
@@ -27,8 +22,9 @@ import {
 const REDIS_HOST = ENV.REDIS_HOST;
 const REDIS_PORT = ENV.REDIS_PORT;
 const QDRANT_URL = ENV.QDRANT_URL;
+const qc = new QdrantClient({ url: QDRANT_URL });
 
-/** OCR env (kept exactly as before) */
+/** OCR env */
 const OCR_ENABLED = String(process.env.OCR_ENABLED || "true") === "true";
 const OCR_LANGS = process.env.OCR_LANGS || "eng";
 const OCR_DPI_LIST = (process.env.OCR_DPI_LIST || "")
@@ -38,11 +34,8 @@ const OCR_DPI_LIST = (process.env.OCR_DPI_LIST || "")
 const OCR_DPI_FALLBACK = Number(process.env.OCR_DPI || 300);
 const EFFECTIVE_DPIS = OCR_DPI_LIST.length ? OCR_DPI_LIST : [OCR_DPI_FALLBACK];
 const OCR_TEXT_MIN_THRESHOLD = Number(process.env.OCR_TEXT_MIN_THRESHOLD || 800);
-const OCR_MAX_PAGES = process.env.OCR_MAX_PAGES
-  ? Number(process.env.OCR_MAX_PAGES)
-  : undefined;
+const OCR_MAX_PAGES = process.env.OCR_MAX_PAGES ? Number(process.env.OCR_MAX_PAGES) : undefined;
 
-/* Debug print of OCR env */
 console.log("[worker] OCR settings →", {
   OCR_ENABLED,
   OCR_LANGS,
@@ -50,6 +43,18 @@ console.log("[worker] OCR settings →", {
   OCR_TEXT_MIN_THRESHOLD,
   OCR_MAX_PAGES,
 });
+
+/* ---------------------------- Helpers ---------------------------- */
+async function collectionHasAnyPoints(collection) {
+  try {
+    const info = await qc.getCollection(collection).catch(() => null);
+    if (typeof info?.points_count === "number") return info.points_count > 0;
+    const sc = await qc.scroll(collection, { limit: 1 }).catch(() => null);
+    return Array.isArray(sc?.points) && sc.points.length > 0;
+  } catch {
+    return false;
+  }
+}
 
 /* ---------------------------- Jobs ---------------------------- */
 
@@ -66,7 +71,7 @@ async function handleFileReady(job) {
   if (!rec) throw new Error("Doc not found");
   const ownerId = ownerIdFromJob || rec.ownerId;
 
-  await col.updateOne({ _id: docId }, { $set: { status: "processing" } });
+  await col.updateOne({ _id: docId }, { $set: { status: "processing", updatedAt: new Date() } });
   try {
     await job.updateProgress({ ownerId, docId: String(docId), status: "processing", pct: 5, stage: "start" });
   } catch {}
@@ -99,11 +104,7 @@ async function handleFileReady(job) {
 
     if (shouldOCR) {
       await job.updateProgress({ ownerId, docId: String(docId), status: "processing", pct: 45, stage: "ocr" });
-      console.log(
-        `[worker] ${rec.name}: low text (${totalTextLen}). Running OCR fallback across DPIs ${JSON.stringify(
-          EFFECTIVE_DPIS
-        )} …`
-      );
+      console.log(`[worker] ${rec.name}: low text (${totalTextLen}). Running OCR fallback across DPIs ${JSON.stringify(EFFECTIVE_DPIS)} …`);
 
       let best = { docs: null, textLen: -1, meanConf: -1, dpi: null, pages: 0 };
 
@@ -121,11 +122,7 @@ async function handleFileReady(job) {
           OCR_LANGS
         );
 
-        console.log(
-          `[worker] ${rec.name}: OCR pass dpi=${dpi} pages=${pngs.length} textLen=${pass.textLen} meanConf=${pass.meanConf?.toFixed?.(
-            1
-          ) || "n/a"}`
-        );
+        console.log(`[worker] ${rec.name}: OCR pass dpi=${dpi} pages=${pngs.length} textLen=${pass.textLen} meanConf=${pass.meanConf?.toFixed?.(1) || "n/a"}`);
 
         const better =
           pass.textLen > best.textLen ||
@@ -139,11 +136,7 @@ async function handleFileReady(job) {
       if (!best.docs || best.textLen <= 0) {
         console.warn(`[worker] ${rec.name}: OCR fallback produced no usable text; keeping native.`);
       } else {
-        console.log(
-          `[worker] ${rec.name}: OCR chosen dpi=${best.dpi} pages=${best.pages} textLen=${best.textLen} meanConf=${best.meanConf.toFixed?.(
-            1
-          ) || "n/a"}`
-        );
+        console.log(`[worker] ${rec.name}: OCR chosen dpi=${best.dpi} pages=${best.pages} textLen=${best.textLen} meanConf=${best.meanConf.toFixed?.(1) || "n/a"}`);
         baseDocs = best.docs;
       }
     }
@@ -153,14 +146,26 @@ async function handleFileReady(job) {
     const { chunks } = await chunkAndIndex(baseDocs, rec.collection);
     await job.updateProgress({ ownerId, docId: String(docId), status: "processing", pct: 90, stage: "indexing" });
 
-    await col.updateOne({ _id: docId }, { $set: { status: "ready", pages: baseDocs.length } });
+    // 4) Verify Qdrant actually has points before flipping to ready
+    const hasPoints = await collectionHasAnyPoints(rec.collection);
+    if (!hasPoints) {
+      throw new Error("Qdrant shows zero points after upsert");
+    }
+
+    await col.updateOne(
+      { _id: docId },
+      { $set: { status: "ready", pages: baseDocs.length, updatedAt: new Date() } }
+    );
     console.log(`✅ [file-ready] ${rec.name}: indexed ${chunks} chunks → ${rec.collection}`);
 
-    // Return ownerId + docId so server QueueEvents 'completed' can notify the right user
+    // Return ownerId + docId so QueueEvents 'completed' can notify the right user
     return { ownerId, docId: String(docId), ok: true, chunks, pages: baseDocs.length, usedOCR: shouldOCR };
   } catch (err) {
     console.error("❌ [file-ready] Worker error:", err);
-    await col.updateOne({ _id: docId }, { $set: { status: "error", error: String(err?.message || err) } });
+    await col.updateOne(
+      { _id: docId },
+      { $set: { status: "error", error: String(err?.message || err), updatedAt: new Date() } }
+    );
     try {
       await job.updateProgress({ ownerId, docId: String(docId), status: "error", pct: 100, stage: "failed" });
     } catch {}
@@ -188,41 +193,25 @@ async function handleHardDelete(job) {
   }
 
   try {
-    // Let UI know it's deleting (SSE listener can show spinner)
-    try {
-      await job.updateProgress({ ownerId, docId: String(docId), status: "deleting", pct: 10, stage: "start" });
-    } catch {}
-
-    const qc = new QdrantClient({ url: QDRANT_URL });
-    await qc.deleteCollection(collection);
-    console.log(`[hard-delete] Qdrant collection deleted: ${collection}`);
-    try {
-      await job.updateProgress({ ownerId, docId: String(docId), status: "deleting", pct: 50, stage: "vectors" });
-    } catch {}
-
+    try { await job.updateProgress({ ownerId, docId: String(docId), status: "deleting", pct: 10, stage: "start" }); } catch {}
+    await qc.deleteCollection(collection).catch((e) => {
+      console.log(`[hard-delete] Qdrant collection delete skipped/failed: ${collection}`, e?.message);
+    });
+    try { await job.updateProgress({ ownerId, docId: String(docId), status: "deleting", pct: 50, stage: "vectors" }); } catch {}
   } catch (e) {
-    console.log(`[hard-delete] Qdrant collection delete skipped/failed: ${collection}`, e?.message);
+    console.log(`[hard-delete] Qdrant error (ignored): ${collection}`, e?.message);
   }
 
   try {
     const gfs = await bucket();
     await gfs.delete(gridId);
-    console.log(`[hard-delete] GridFS blob deleted: ${gridIdStr}`);
-    try {
-      await job.updateProgress({ ownerId, docId: String(docId), status: "deleting", pct: 75, stage: "blob" });
-    } catch {}
+    try { await job.updateProgress({ ownerId, docId: String(docId), status: "deleting", pct: 75, stage: "blob" }); } catch {}
   } catch (e) {
     console.log(`[hard-delete] GridFS delete skipped/failed: ${gridIdStr}`, e?.message);
   }
 
   await col.deleteOne({ _id: docId, ownerId });
-  console.log(`[hard-delete] Mongo record deleted: ${docIdStr}`);
-
-  try {
-    await job.updateProgress({ ownerId, docId: String(docId), status: "deleted", pct: 100, stage: "done" });
-  } catch {}
-
-  // IMPORTANT: don't return { ownerId, docId } here
+  try { await job.updateProgress({ ownerId, docId: String(docId), status: "deleted", pct: 100, stage: "done" }); } catch {}
   return { deleted: true };
 }
 

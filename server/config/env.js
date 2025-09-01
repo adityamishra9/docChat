@@ -14,7 +14,7 @@ export const ENV = {
   QDRANT_URL: process.env.QDRANT_URL || "http://localhost:6333",
   EMBEDDINGS_URL: process.env.EMBEDDINGS_URL || "http://localhost:8001/embeddings",
   GEMINI_API_KEY: process.env.GEMINI_API_KEY || "",
-  CORS_ORIGIN: (process.env.CORS_ORIGIN || "http://localhost:3000")
+  CORS_ORIGIN: (process.env.CORS_ORIGIN || "http://localhost:49151")
     .split(",")
     .map(s => s.trim())
     .filter(Boolean),

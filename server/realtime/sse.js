@@ -12,7 +12,6 @@ export function sseHandler(req, res, userId) {
   clients.get(userId).add(res);
 
   res.write(`event: hello\ndata: ${JSON.stringify({ ok: true })}\n\n`);
-
   const ping = setInterval(() => res.write(`: ping\n\n`), 15000);
 
   req.on("close", () => {

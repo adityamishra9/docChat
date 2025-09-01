@@ -8,7 +8,15 @@ function toObjId(id) {
   try { return new ObjectId(id); } catch { return null; }
 }
 
-// progress
+function parseReturnValue(rv) {
+  if (!rv) return {};
+  if (typeof rv === "string") {
+    try { return JSON.parse(rv); } catch { return {}; }
+  }
+  return rv;
+}
+
+// progress (keeps UI responsive, idempotent)
 queueEvents.on("progress", async ({ data }) => {
   const { ownerId, docId, pct, stage, status } = data || {};
   if (!ownerId || !docId) return;
@@ -26,31 +34,37 @@ queueEvents.on("progress", async ({ data }) => {
       }
     );
   } catch (e) {
-    console.error("progress persist error:", e);
+    console.error("progress persist error:", e?.message || e);
   }
   pushToUser(ownerId, "doc", {
-    type: "progress", docId, status: status || "processing",
-    pct: typeof pct === "number" ? pct : null, stage: stage ?? null,
+    type: "progress",
+    docId,
+    status: status || "processing",
+    pct: typeof pct === "number" ? pct : null,
+    stage: stage ?? null,
   });
 });
 
-// completed
-queueEvents.on("completed", async ({ returnvalue }) => {
-  const { ownerId, docId, pages } = returnvalue || {};
+// completed (authoritative flip → ready)
+queueEvents.on("completed", async (payload) => {
+  const ret = parseReturnValue(payload?.returnvalue);
+  const { ownerId, docId, pages } = ret || {};
   if (!ownerId || !docId) return;
+
   try {
     const col = (await db()).collection("documents");
     await col.updateOne(
       { _id: toObjId(docId), ownerId },
-      { $set: { status: "ready", updatedAt: new Date() } }
+      { $set: { status: "ready", updatedAt: new Date(), pages: pages ?? undefined } }
     );
   } catch (e) {
-    console.error("completed persist error:", e);
+    console.error("completed persist error:", e?.message || e);
   }
-  pushToUser(ownerId, "doc", { type: "completed", docId, status: "ready", pages });
+
+  pushToUser(ownerId, "doc", { type: "completed", docId, status: "ready", pages: pages ?? null });
 });
 
-// failed
+// failed (authoritative flip → error)
 queueEvents.on("failed", async ({ failedReason, data }) => {
   const { ownerId, docId } = data || {};
   if (!ownerId || !docId) return;
@@ -67,7 +81,7 @@ queueEvents.on("failed", async ({ failedReason, data }) => {
       }
     );
   } catch (e) {
-    console.error("failed persist error:", e);
+    console.error("failed persist error:", e?.message || e);
   }
   pushToUser(ownerId, "doc", { type: "failed", docId, status: "error", error: failedReason || null });
 });

@@ -17,9 +17,8 @@ services:
 
   # ---------------- embedder ----------------
   embedder:
-    image: adityamishra9/docchat-embedder:1
+    image: adityamishra9/docchat-embedder:latest
     ports: ["8001:8000"]
-    env_file: [.env]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/embeddings"]
       interval: 10s
@@ -28,30 +27,30 @@ services:
 
   # ---------------- backend API ----------------
   server:
-    image: adityamishra9/docchat-server:1
+    image: adityamishra9/docchat-server:latest
     command: ["node", "index.js"]
     restart: unless-stopped
-    env_file: [.env]
     environment:
       NODE_ENV: production
       PORT: "8000"
+      CLERK_PUBLISHABLE_KEY: pk_test_cG9zc2libGUtcGFycm90LTEyLmNsZXJrLmFjY291bnRzLmRldiQ
+      CLERK_SECRET_KEY: sk_test_ZZBqpYa08VLDOTzJoc7fbSMFENlPOY8O7GyYdzmQq5
+      CORS_ORIGIN: http://localhost:49151
       MONGODB_URI: mongodb://mongo:27017
       MONGODB_DB: docchat
       REDIS_HOST: valkey
       REDIS_PORT: "6379"
       QDRANT_URL: http://qdrant:6333
       EMBEDDINGS_URL: http://embedder:8000/embeddings
-      CORS_ORIGIN: http://localhost:49151
-      TESSDATA_PREFIX: /usr/share/tesseract-ocr/4.00/tessdata
+      GEMINI_API_KEY: AIzaSyDWYMmlGLC3FTArOY0IaRSzhUCLQpHqbyw
     depends_on: [valkey, mongo, qdrant, embedder]
     ports: ["8000:8000"]
 
   # ---------------- worker ----------------
   worker:
-    image: adityamishra9/docchat-server:1
+    image: adityamishra9/docchat-server:latest
     command: ["node", "worker.js"]
     restart: unless-stopped
-    env_file: [.env]
     environment:
       NODE_ENV: production
       MONGODB_URI: mongodb://mongo:27017
@@ -60,19 +59,26 @@ services:
       REDIS_PORT: "6379"
       QDRANT_URL: http://qdrant:6333
       EMBEDDINGS_URL: http://embedder:8000/embeddings
+      OCR_ENABLED: "true"
+      OCR_LANGS: eng
+      OCR_DPI_LIST: "300,400,600"
+      OCR_DPI: "300"
+      OCR_TEXT_MIN_THRESHOLD: "800"
+      # OCR_MAX_PAGES: ""
       TESSDATA_PREFIX: /usr/share/tesseract-ocr/4.00/tessdata
     depends_on: [valkey, mongo, qdrant, embedder]
 
   # ---------------- frontend ----------------
   client:
-    image: adityamishra9/docchat-client:1
+    image: adityamishra9/docchat-client:latest
     restart: unless-stopped
-    env_file: [.env]
     environment:
-      NEXT_PUBLIC_API_BASE: http://localhost:8000
       NODE_ENV: production
       PORT: "49151"
       HOSTNAME: "0.0.0.0"
+      NEXT_PUBLIC_API_BASE: http://server:8000
+      NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: pk_test_cG9zc2libGUtcGFycm90LTEyLmNsZXJrLmFjY291bnRzLmRldiQ
+      CLERK_SECRET_KEY: sk_test_ZZBqpYa08VLDOTzJoc7fbSMFENlPOY8O7GyYdzmQq5
     depends_on: [server]
     ports: ["49151:49151"]
 

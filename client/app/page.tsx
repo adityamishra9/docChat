@@ -14,7 +14,16 @@ import EmptyState from "./components/empty-state";
 import { useToasts, ToastViewport } from "./components/ui/use-toasts";
 import { useLocalStorageState } from "./lib/use-localstorage";
 import { useCmdK } from "./lib/use-cmdk";
-import { useAuth, SignedIn, SignedOut, SignInButton } from "@clerk/nextjs";
+import {
+  useAuth,
+  SignedIn,
+  SignedOut,
+  SignInButton,
+  UserButton,
+  SignIn,
+  ClerkLoaded,
+  ClerkLoading,
+} from "@clerk/nextjs";
 import { API_BASE, useApi, endpoints } from "./lib/api-client";
 import type { Doc, Message } from "./types";
 
@@ -545,258 +554,308 @@ export default function AppHome() {
   }, []);
 
   return (
-    <div className="max-w-7xl mx-auto px-4 pb-8 pt-6">
+    <>
       <ToastViewport toasts={toasts} />
 
-      <SignedOut>
-        <div className="mb-4">
-          <Alert
-            variant="warning"
-            title="You’re signed out"
-            actions={
-              <SignInButton mode="modal">
-                <button className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 border border-white/15 text-white text-sm">
-                  Sign in
-                </button>
-              </SignInButton>
-            }
-          >
-            <div className="mt-1">
-              Sign in with Clerk to view your documents, upload PDFs, and chat.
-            </div>
-          </Alert>
-        </div>
-      </SignedOut>
-
-      <UploadModal
-        open={showUploadModal}
-        onClose={() => setShowUploadModal(false)}
-        onUploaded={(uploaded: Doc[]) => {
-          onUploaded(uploaded);
-          setShowUploadModal(false);
-        }}
-        emitGlobalEvent={false}
-      />
-
-      <input
-        ref={fileInputRef}
-        id="global-upload"
-        type="file"
-        accept="application/pdf"
-        className="hidden"
-        onChange={async (e) => {
-          const f = e.target.files?.[0];
-          if (f) {
-            await uploadPdf(f);
-            e.currentTarget.value = "";
-          }
-        }}
-      />
-
-      <CommandPalette
-        isOpen={cmdOpen}
-        onClose={() => setCmdOpen(false)}
-        docs={docs ?? []}
-        activeId={activeId}
-        onSelectDoc={(id) => {
-          setActiveId(id);
-          setCmdOpen(false);
-        }}
-      />
-
-      {/* Toolbar (mobile) */}
-      <div className="lg:hidden mb-4 flex items-center justify-between">
-        <button
-          onClick={() => setSidebarOpen(true)}
-          className="inline-flex items-center gap-2 px-3 py-2 rounded-xl border border-white/10 bg-white/5 text-white hover:bg-white/10 focus:outline-none focus:ring-2 focus:ring-white/30"
-          aria-label="Open Library (L)"
-        >
-          <Menu size={18} />
-          Library
-        </button>
-        <button
-          onClick={() => setShowUploadModal(true)}
-          className="inline-flex items-center gap-2 px-3 py-2 rounded-xl border border-emerald-400/30 bg-emerald-400/10 text-emerald-200 hover:bg-emerald-400/20 focus:outline-none focus:ring-2 focus:ring-emerald-300/40"
-          aria-label="Upload (U)"
-        >
-          <PlusCircle size={18} />
-          Upload
-        </button>
-      </div>
-
-      {/* Desktop layout */}
-      <div className="hidden lg:flex lg:gap-4 h-[calc(100vh-6rem)] min-h-0">
-        {/* Sidebar */}
-        <aside className="lg:sticky lg:top-20" style={{ width: sidebarWidth }}>
-          <div className="rounded-2xl border border-white/10 bg-white/5 backdrop-blur-xl shadow-xl h-[calc(100vh-6rem)] overflow-hidden">
-            <SidebarDocs
-              docs={docs}
-              loading={loadingDocs || !isLoaded}
-              activeId={activeId}
-              onSelect={(id) => setActiveId(id)}
-              onClearAll={() => {
-                setDocs([]);
-                setActiveId(null);
-                updateConversations(() => ({}));
-                router.replace(`/`);
-              }}
-            />
-            <div className="p-4 border-t border-white/10">
-              <SignedIn>
-                <FileUpload onUploaded={onUploaded} />
-              </SignedIn>
-              <SignedOut>
-                <div className="text-xs text-white/60">
-                  Sign in to enable uploads.
-                </div>
-              </SignedOut>
-            </div>
+      {/* While Clerk is booting, show a full-page skeleton so we don't flash the welcome card */}
+      <ClerkLoading>
+        <div className="min-h-screen w-full grid place-items-center p-6">
+          <div className="w-full max-w-md rounded-2xl border border-white/10 bg-white/5 backdrop-blur-xl p-6 shadow-2xl">
+            <div className="h-6 w-1/2 rounded bg-white/10 animate-pulse mb-4" />
+            <div className="h-10 w-full rounded bg-white/10 animate-pulse mb-3" />
+            <div className="h-10 w-full rounded bg-white/10 animate-pulse mb-3" />
+            <div className="h-12 w-full rounded bg-white/10 animate-pulse" />
           </div>
-        </aside>
-
-        {/* Drag handle */}
-        <div
-          className="w-1 mx-1 cursor-col-resize relative select-none"
-          title="Drag to resize"
-          aria-label="Resize sidebar"
-          onMouseDown={onDragStart}
-        >
-          <div className="absolute inset-y-0 left-0 right-0 rounded-full bg-white/10 hover:bg-white/20 transition-colors" />
         </div>
+      </ClerkLoading>
 
-        {/* Main */}
-        <main
-          className="flex-1 min-w-0 h-full min-h-0 overflow-hidden flex flex-col rounded-2xl border border-white/10 bg-white/5 backdrop-blur-xl shadow-2xl"
-          onDragOver={(e) => {
-            if (activeDoc) return;
-            e.preventDefault();
-            setDragOver(true);
-          }}
-          onDragLeave={() => !activeDoc && setDragOver(false)}
-        >
-          {loadingDocs && (
-            <div className="p-6 animate-pulse text-white/70">
-              Loading your library…
-            </div>
-          )}
-
-          {!loadingDocs && errorDocs && (
-            <div className="p-6">
-              <Alert
-                variant="error"
-                title="Can’t load your library"
-                actions={
-                  <>
-                    <button
-                      onClick={fetchDocs}
-                      className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 border border-white/15 text-white text-sm"
-                    >
-                      Retry
-                    </button>
-                    <a
-                      href={`${API_BASE}/`}
-                      target="_blank"
-                      className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-white/80 text-sm"
-                    >
-                      Health
-                    </a>
-                  </>
-                }
-              >
-                <div className="mt-1">
-                  {errorDocs} Ensure{" "}
-                  <code className="text-white/90">NEXT_PUBLIC_API_BASE</code> is
-                  correct.
-                </div>
-              </Alert>
-            </div>
-          )}
-
-          {!loadingDocs && !errorDocs && (
-            <>
-              {activeDoc ? (
-                <ChatWindow
-                  key={activeDoc.id}
-                  doc={activeDoc}
-                  messages={liveConversations[activeDoc.id] || []}
-                  onSend={(text) => sendMessage(activeDoc.id, text)}
-                  onUploaded={onUploaded}
+      <ClerkLoaded>
+        {/* Signed-out experience */}
+        <SignedOut>
+          <div className="min-h-screen w-full grid place-items-center p-6">
+            <div className="w-full max-w-md">
+              <div className="rounded-2xl border border-white/10 bg-white/5 backdrop-blur-xl p-6 shadow-2xl">
+                <h1 className="text-2xl font-medium mb-2 text-white">
+                  Welcome to DocChat
+                </h1>
+                <p className="text-white/70 mb-6">
+                  Sign in to upload PDFs and chat with them.
+                </p>
+                <SignIn
+                  routing="hash"
+                  afterSignInUrl="/"
+                  afterSignUpUrl="/"
+                  appearance={{
+                    baseTheme: undefined,
+                    elements: {
+                      rootBox: "w-full",
+                      card: "w-full bg-transparent shadow-none border-none",
+                      formButtonPrimary:
+                        "bg-gradient-to-r from-emerald-400 to-blue-500 text-black font-medium hover:opacity-90 shadow-lg shadow-emerald-500/20 rounded-lg",
+                    },
+                  }}
                 />
-              ) : (
-                <EmptyState
-                  dragOver={dragOver}
-                  activeDocExists={!!activeDoc}
-                  onOpenFilePicker={openFilePicker}
-                  onDropFile={uploadPdf}
-                />
-              )}
-            </>
-          )}
-        </main>
-      </div>
-
-      {/* Mobile layout */}
-      <div className="lg:hidden grid lg:grid-cols-[320px_1fr] gap-4">
-        <aside
-          className={[
-            "fixed inset-0 lg:static lg:inset-auto",
-            sidebarOpen ? "z-50" : "pointer-events-none -z-10",
-          ].join(" ")}
-        >
-          <div className="h-full w-full">
-            <div
-              className={`absolute inset-0 bg-black/50 ${sidebarOpen ? "" : "hidden"}`}
-              onClick={() => setSidebarOpen(false)}
-              aria-hidden="true"
-            />
-            <div
-              className={`absolute top-0 left-0 h-full w-[85%] max-w-[360px] bg-white/5 backdrop-blur-xl border-r border-white/10 shadow-2xl transform transition-transform ${
-                sidebarOpen ? "translate-x-0" : "-translate-x-full"
-              }`}
-              role="dialog"
-              aria-label="Document Library"
-            >
-              <SidebarDocs
-                docs={docs}
-                loading={loadingDocs || !isLoaded}
-                activeId={activeId}
-                onSelect={(id) => {
-                  setActiveId(id);
-                  setSidebarOpen(false);
-                }}
-                onClearAll={() => {
-                  setDocs([]);
-                  setActiveId(null);
-                  updateConversations(() => ({}));
-                  router.replace(``);
-                }}
-              />
-              <div className="p-4 border-t border-white/10">
-                <SignedIn>
-                  <FileUpload onUploaded={onUploaded} />
-                </SignedIn>
-                <SignedOut>
-                  <div className="text-xs text-white/60">
-                    Sign in to enable uploads.
-                  </div>
-                </SignedOut>
               </div>
             </div>
           </div>
-        </aside>
+        </SignedOut>
 
-        <main className="h-[calc(100vh-6rem)] min-h-0 overflow-hidden flex flex-col rounded-2xl border border-white/10 bg-white/5 backdrop-blur-xl shadow-2xl">
-          {!loadingDocs && !errorDocs && activeDoc && (
-            <ChatWindow
-              key={activeDoc.id}
-              doc={activeDoc}
-              messages={liveConversations[activeDoc.id] || []}
-              onSend={(text) => sendMessage(activeDoc.id, text)}
-              onUploaded={onUploaded}
+        {/* Signed-in experience */}
+        {/* Signed-in experience */}
+        <SignedIn>
+          {/* Fixed header (no extra scroll above) */}
+          <header className="fixed top-0 left-0 right-0 z-40 backdrop-blur-xl bg-black/10 border-b border-white/10">
+            <nav className="max-w-7xl mx-auto px-4 h-14 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="h-8 w-8 rounded-xl bg-gradient-to-br from-blue-500 via-emerald-400 to-rose-500" />
+                <span className="text-white font-medium tracking-tight">
+                  DocChat
+                </span>
+              </div>
+              <UserButton
+                appearance={{
+                  elements: {
+                    userButtonAvatarBox:
+                      "ring-2 ring-white/20 hover:ring-white/30 transition-shadow",
+                    userButtonPopoverCard:
+                      "bg-white/5 backdrop-blur-xl border border-white/10 text-white",
+                    userButtonPopoverMain: "text-white",
+                    userButtonPopoverActionButton: "hover:bg-white/10",
+                  },
+                }}
+              />
+            </nav>
+          </header>
+
+          {/* Content is pushed below the fixed header (pt-16 ~= 64px) */}
+          <div className="max-w-7xl mx-auto px-4 pb-6 pt-16">
+            <UploadModal
+              open={showUploadModal}
+              onClose={() => setShowUploadModal(false)}
+              onUploaded={(uploaded: Doc[]) => {
+                onUploaded(uploaded);
+                setShowUploadModal(false);
+              }}
+              emitGlobalEvent={false}
             />
-          )}
-        </main>
-      </div>
-    </div>
+
+            <input
+              ref={fileInputRef}
+              id="global-upload"
+              type="file"
+              accept="application/pdf"
+              className="hidden"
+              onChange={async (e) => {
+                const f = e.target.files?.[0];
+                if (f) {
+                  await uploadPdf(f);
+                  e.currentTarget.value = "";
+                }
+              }}
+            />
+
+            <CommandPalette
+              isOpen={cmdOpen}
+              onClose={() => setCmdOpen(false)}
+              docs={docs ?? []}
+              activeId={activeId}
+              onSelectDoc={(id) => {
+                setActiveId(id);
+                setCmdOpen(false);
+              }}
+            />
+
+            {/* Toolbar (mobile) */}
+            <div className="lg:hidden mb-4 flex items-center justify-between">
+              <button
+                onClick={() => setSidebarOpen(true)}
+                className="inline-flex items-center gap-2 px-3 py-2 rounded-xl border border-white/10 bg-white/5 text-white hover:bg-white/10 focus:outline-none focus:ring-2 focus:ring-white/30"
+                aria-label="Open Library (L)"
+              >
+                <Menu size={18} />
+                Library
+              </button>
+              <button
+                onClick={() => setShowUploadModal(true)}
+                className="inline-flex items-center gap-2 px-3 py-2 rounded-xl border border-emerald-400/30 bg-emerald-400/10 text-emerald-200 hover:bg-emerald-400/20 focus:outline-none focus:ring-2 focus:ring-emerald-300/40"
+                aria-label="Upload (U)"
+              >
+                <PlusCircle size={18} />
+                Upload
+              </button>
+            </div>
+
+            {/* Desktop layout
+        Height = viewport - header(64 for pt-16) - bottom padding(24)
+     */}
+            <div className="hidden lg:flex lg:gap-4 h-[calc(100vh-64px-24px)] min-h-0">
+              {/* Sidebar */}
+              <aside
+                className="lg:sticky lg:top-20"
+                style={{ width: sidebarWidth }}
+              >
+                <div className="rounded-2xl border border-white/10 bg-white/5 backdrop-blur-xl shadow-xl h-[calc(100vh-64px-24px)] overflow-hidden">
+                  <SidebarDocs
+                    docs={docs}
+                    loading={loadingDocs || !isLoaded}
+                    activeId={activeId}
+                    onSelect={(id) => setActiveId(id)}
+                    onClearAll={() => {
+                      setDocs([]);
+                      setActiveId(null);
+                      updateConversations(() => ({}));
+                      router.replace(`/`);
+                    }}
+                  />
+                  <div className="p-4 border-t border-white/10">
+                    <FileUpload onUploaded={onUploaded} />
+                  </div>
+                </div>
+              </aside>
+
+              {/* Drag handle */}
+              <div
+                className="w-1 mx-1 cursor-col-resize relative select-none"
+                title="Drag to resize"
+                aria-label="Resize sidebar"
+                onMouseDown={onDragStart}
+              >
+                <div className="absolute inset-y-0 left-0 right-0 rounded-full bg-white/10 hover:bg-white/20 transition-colors" />
+              </div>
+
+              {/* Main */}
+              <main
+                className="flex-1 min-w-0 h-[calc(100vh-64px-24px)] min-h-0 overflow-hidden flex flex-col rounded-2xl border border-white/10 bg-white/5 backdrop-blur-xl shadow-2xl"
+                onDragOver={(e) => {
+                  if (activeDoc) return;
+                  e.preventDefault();
+                  setDragOver(true);
+                }}
+                onDragLeave={() => !activeDoc && setDragOver(false)}
+              >
+                {loadingDocs && (
+                  <div className="p-6 animate-pulse text-white/70">
+                    Loading your library…
+                  </div>
+                )}
+
+                {!loadingDocs && errorDocs && (
+                  <div className="p-6">
+                    <Alert
+                      variant="error"
+                      title="Can’t load your library"
+                      actions={
+                        <>
+                          <button
+                            onClick={fetchDocs}
+                            className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 border border-white/15 text-white text-sm"
+                          >
+                            Retry
+                          </button>
+                          <a
+                            href={`${API_BASE}/`}
+                            target="_blank"
+                            className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-white/80 text-sm"
+                          >
+                            Health
+                          </a>
+                        </>
+                      }
+                    >
+                      <div className="mt-1">
+                        {errorDocs} Ensure{" "}
+                        <code className="text-white/90">
+                          NEXT_PUBLIC_API_BASE
+                        </code>{" "}
+                        is correct.
+                      </div>
+                    </Alert>
+                  </div>
+                )}
+
+                {!loadingDocs && !errorDocs && (
+                  <>
+                    {activeDoc ? (
+                      <ChatWindow
+                        key={activeDoc.id}
+                        doc={activeDoc}
+                        messages={liveConversations[activeDoc.id] || []}
+                        onSend={(text) => sendMessage(activeDoc.id, text)}
+                        onUploaded={onUploaded}
+                      />
+                    ) : (
+                      <EmptyState
+                        dragOver={dragOver}
+                        activeDocExists={!!activeDoc}
+                        onOpenFilePicker={openFilePicker}
+                        onDropFile={uploadPdf}
+                      />
+                    )}
+                  </>
+                )}
+              </main>
+            </div>
+
+            {/* Mobile layout */}
+            <div className="lg:hidden grid lg:grid-cols-[320px_1fr] gap-4">
+              <aside
+                className={[
+                  "fixed inset-0 lg:static lg:inset-auto",
+                  sidebarOpen ? "z-50" : "pointer-events-none -z-10",
+                ].join(" ")}
+              >
+                <div className="h-full w-full">
+                  <div
+                    className={`absolute inset-0 bg-black/50 ${
+                      sidebarOpen ? "" : "hidden"
+                    }`}
+                    onClick={() => setSidebarOpen(false)}
+                    aria-hidden="true"
+                  />
+                  <div
+                    className={`absolute top-0 left-0 h-full w-[85%] max-w-[360px] bg-white/5 backdrop-blur-xl border-r border-white/10 shadow-2xl transform transition-transform ${
+                      sidebarOpen ? "translate-x-0" : "-translate-x-full"
+                    }`}
+                    role="dialog"
+                    aria-label="Document Library"
+                  >
+                    <SidebarDocs
+                      docs={docs}
+                      loading={loadingDocs || !isLoaded}
+                      activeId={activeId}
+                      onSelect={(id) => {
+                        setActiveId(id);
+                        setSidebarOpen(false);
+                      }}
+                      onClearAll={() => {
+                        setDocs([]);
+                        setActiveId(null);
+                        updateConversations(() => ({}));
+                        router.replace(``);
+                      }}
+                    />
+                    <div className="p-4 border-t border-white/10">
+                      <FileUpload onUploaded={onUploaded} />
+                    </div>
+                  </div>
+                </div>
+              </aside>
+
+              <main className="h-[calc(100vh-64px-24px)] min-h-0 overflow-hidden flex flex-col rounded-2xl border border-white/10 bg-white/5 backdrop-blur-xl shadow-2xl">
+                {!loadingDocs && !errorDocs && activeDoc && (
+                  <ChatWindow
+                    key={activeDoc.id}
+                    doc={activeDoc}
+                    messages={liveConversations[activeDoc.id] || []}
+                    onSend={(text) => sendMessage(activeDoc.id, text)}
+                    onUploaded={onUploaded}
+                  />
+                )}
+              </main>
+            </div>
+          </div>
+        </SignedIn>
+      </ClerkLoaded>
+    </>
   );
 }
