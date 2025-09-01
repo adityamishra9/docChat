@@ -1,3 +1,6 @@
-fastapi
-uvicorn[standard]
-sentence-transformers
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+fastapi==0.115.6
+uvicorn[standard]==0.30.6
+torch==2.4.1
+sentence-transformers==3.0.1

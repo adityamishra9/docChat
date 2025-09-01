@@ -1,6 +1,8 @@
 # ---------- deps ----------
 FROM node:20-alpine AS deps
 WORKDIR /app
+# glibc compat fixes common native deps (e.g., sharp) on Alpine
+RUN apk add --no-cache libc6-compat
 COPY package.json package-lock.json* pnpm-lock.yaml* yarn.lock* ./
 RUN if [ -f pnpm-lock.yaml ]; then \
       corepack enable && pnpm i --frozen-lockfile; \
@@ -16,6 +18,8 @@ WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
+# disable telemetry in CI/builds
+ENV NEXT_TELEMETRY_DISABLED=1
 RUN if [ -f pnpm-lock.yaml ]; then \
       corepack enable && pnpm build; \
     elif [ -f yarn.lock ]; then \
@@ -25,14 +29,16 @@ RUN if [ -f pnpm-lock.yaml ]; then \
     fi
 
 # ---------- runtime ----------
+# Tip: Alpine is fine; if you ever hit native-binary pains, switch to bookworm-slim.
 FROM node:20-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
-# If using output:'standalone' this is all you need:
+# If using Next output:'standalone'
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/public ./public
 COPY --from=builder /app/.next/static ./.next/static
 
 EXPOSE 49151
-ENV HOST=0.0.0.0 PORT=49151
+ENV HOST=0.0.0.0
+ENV PORT=49151
 CMD ["node", "server.js"]

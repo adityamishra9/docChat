@@ -76,7 +76,7 @@ services:
       NODE_ENV: production
       PORT: "49151"
       HOSTNAME: "0.0.0.0"
-      NEXT_PUBLIC_API_BASE: http://server:8000
+      NEXT_PUBLIC_API_BASE: http://localhost:8000
       NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: pk_test_cG9zc2libGUtcGFycm90LTEyLmNsZXJrLmFjY291bnRzLmRldiQ
       CLERK_SECRET_KEY: sk_test_ZZBqpYa08VLDOTzJoc7fbSMFENlPOY8O7GyYdzmQq5
     depends_on: [server]

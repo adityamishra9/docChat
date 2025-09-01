@@ -23,13 +23,10 @@ RUN if [ -f pnpm-lock.yaml ]; then \
 # Copy source
 COPY . .
 
-# Build (if your server has TS or build steps—safe to no-op if not)
+# Build (safe no-op if not needed)
 RUN npm run build || echo "No build step, continuing."
 
 EXPOSE 8000
 
-# Use tini for proper PID 1 signaling
 ENTRYPOINT ["/usr/bin/tini", "--"]
-
-# Command is provided by docker-compose (index.js or worker.js)
 CMD ["node", "index.js"]
