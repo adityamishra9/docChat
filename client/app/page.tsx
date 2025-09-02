@@ -762,13 +762,7 @@ export default function AppHome() {
                         </>
                       }
                     >
-                      <div className="mt-1">
-                        {errorDocs} Ensure{" "}
-                        <code className="text-white/90">
-                          NEXT_PUBLIC_API_BASE
-                        </code>{" "}
-                        is correct.
-                      </div>
+                      <div className="mt-1">{errorDocs}</div>
                     </Alert>
                   </div>
                 )}

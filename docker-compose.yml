@@ -73,7 +73,7 @@ services:
     image: adityamishra9/docchat-client:latest
     restart: unless-stopped
     environment:
-      NODE_ENV: production
+      NODE_ENV: development
       PORT: "49151"
       HOSTNAME: "0.0.0.0"
       NEXT_PUBLIC_API_BASE: http://localhost:8000
