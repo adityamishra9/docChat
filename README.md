@@ -1,128 +1,192 @@
-# Chat-with-Files
+# 📄 DocChat — Chat with your PDFs
 
-A multi-service application that processes PDF uploads, extracts text (via OCR for scanned documents), generates embeddings with a local FastAPI service, and indexes the results in Qdrant for semantic search.
+[![Docker](https://img.shields.io/badge/Docker-ready-blue?logo=docker)](https://www.docker.com/)
+[![Next.js](https://img.shields.io/badge/Next.js-15-black?logo=next.js)](https://nextjs.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-embeddings-teal?logo=fastapi)](https://fastapi.tiangolo.com/)
+[![LangChain](https://img.shields.io/badge/LangChain-RAG-success)](https://www.langchain.com/)
+[![Qdrant](https://img.shields.io/badge/Qdrant-vector%20db-purple)](https://qdrant.tech)
+[![Clerk](https://img.shields.io/badge/Auth-Clerk-orange)](https://clerk.com)
 
-## Folder Structure
+Upload PDFs, index them into a vector database, and chat conversationally with AI — **all running locally in Docker.**
 
+---
+
+## ⚡ Quick Setup (One-liners)
+
+You need **Docker** and **cURL/PowerShell**.
+
+### 🐧 macOS / Linux
 ```bash
-chat-with-files/
-├── client/           # Frontend application
-├── embed-server/     # Local FastAPI embedding service
-├── server/           # Main worker/service handling PDF uploads, OCR, embedding, and indexing
-├── docker-compose.yml
-└── .gitignore        # Root-level ignore rules
+curl -fsSL https://raw.githubusercontent.com/adityamishra9/docChat/master/docker-compose.yml \
+  | docker compose -p docchat -f - up -d
 ```
 
-## Prerequisites
+### 🪟 Windows (PowerShell)
+```powershell
+iwr https://raw.githubusercontent.com/adityamishra9/docChat/master/docker-compose.yml -OutFile docker-compose.yml; docker compose -p docchat -f docker-compose.yml up -d
+```
 
-<!-- ### System Dependencies
+Once complete, your app will be available at:
 
-These tools must be installed globally (via Homebrew or your OS package manager):
+```
+http://localhost:49151
+```
 
+---
+
+## 🏗️ Architecture
+
+```mermaid
+flowchart LR
+  subgraph Client["Next.js Frontend"]
+    UI["Upload Modal & Chat Window"]
+    Clerk["Clerk Auth"]
+  end
+
+  subgraph Server["Express.js API"]
+    Upload["PDF Uploads (Multer + GridFS)"]
+    Chat["Chat Endpoint"]
+    Queue["Redis Queue (BullMQ)"]
+  end
+
+  subgraph Worker["BullMQ Worker"]
+    Split["Text Splitter"]
+    Embed["Embedding via FastAPI"]
+    QdrantStore["Qdrant Vector Store"]
+  end
+
+  subgraph Embedder["FastAPI Service"]
+    MiniLM["SentenceTransformer all-MiniLM-L6-v2"]
+  end
+
+  subgraph Infra["Databases"]
+    Mongo["MongoDB + GridFS"]
+    Qdrant["Qdrant Vector DB"]
+    RedisNode["Valkey / Redis Queue"]
+  end
+
+  UI -->|Auth| Clerk
+  UI -->|REST| Server
+  Server -->|Enqueue| Queue
+  Queue --> Worker
+  Worker -->|store vectors| QdrantStore
+  Worker --> Mongo
+  Worker --> Embedder
+  Embedder --> MiniLM
+```
+
+---
+
+## ✨ Features
+
+- 📤 **Upload PDFs** — Supports multiple files with drag & drop.  
+- 🔍 **Semantic Search** — Indexes chunks into Qdrant for retrieval.  
+- 💬 **Conversational AI** — Uses Gemini for responses with context injection.  
+- 📚 **Document Library** — Sidebar with search, filters, and statuses.  
+- 👤 **Authentication** — Secure access using Clerk.  
+- ⚡ **Real-time Processing** — BullMQ worker updates doc statuses.  
+- 🎨 **Modern UI** — Built with Next.js 15, Tailwind 4, Geist fonts, and Lucide icons.  
+
+---
+
+## 📂 Project Structure
+
+```
+docChat/
+├── client/              # Next.js frontend (Clerk, Tailwind, components)
+├── server/              # Node/Express API
+│   ├── index.js         # Routes: /documents, /upload/pdf, /chat
+│   ├── worker.js        # BullMQ worker for PDF → embeddings → Qdrant
+│   ├── db.js            # Mongo + GridFS helpers
+│   └── package.json
+├── embed-server/        # FastAPI embedding microservice
+│   ├── app.py           # /embeddings endpoint
+│   └── requirements.txt
+├── docker-compose.yml   # Orchestrates infra + services
+└── README.md
+```
+
+---
+
+## 🔐 Environment Variables
+
+Create a `.env` file for the server:
+
+```env
+PORT=8000
+MONGODB_URI=mongodb://mongo:27017
+MONGODB_DB=docchat
+REDIS_HOST=valkey
+REDIS_PORT=6379
+QDRANT_URL=http://qdrant:6333
+EMBEDDINGS_URL=http://embedder:8001/embeddings
+GEMINI_API_KEY=your_gemini_api_key_here
+CLERK_SECRET_KEY=your_clerk_secret_key
+```
+
+Frontend requires:
+
+```env
+NEXT_PUBLIC_API_BASE=http://localhost:8000
+NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=your_clerk_publishable_key
+```
+
+---
+
+## 🖥️ Development
+
+### Client
 ```bash
-# macOS (Homebrew)
-brew install graphicsmagick    # PDF-to-image conversion
-brew install poppler           # Poppler utilities (pdftoppm)
-brew install ghostscript       # Ghostscript delegate for gm/convert
-
-# Debian/Ubuntu
-sudo apt-get update
-sudo apt-get install -y graphicsmagick poppler-utils ghostscript
-
-# Fedora/CentOS
-sudo dnf install -y GraphicsMagick poppler-utils ghostscript -->
-
-````
-
-### Node.js & PNPM
-
-* Node.js `>=14.x`
-* PNPM
-
-## Setup
-
-1. **Clone the repository**
-
-   ```bash
-````
-
-git clone https://github.com/adityamishra9/chat-with-files.git
-cd chat-with-files
-
+cd client
+pnpm dev
 ```
 
-2. **Install dependencies**
-
+### Server
+```bash
+cd server
+pnpm dev
 ```
 
-- **Client**
+### Worker
+```bash
+cd server
+pnpm dev:worker
+```
+
+### Embedder
+```bash
+cd embed-server
+uvicorn app:app --reload --port 8001
+```
+
+---
+
+## 🧪 Testing
+
+- Upload a PDF from the UI or drag & drop into the chat window.  
+- Monitor logs with:
   ```bash
-  cd client
-  pnpm i
+  docker compose logs -f
+  ```
+- Check health endpoints:
+  - Server → `http://localhost:8000/`
+  - Embedder → `http://localhost:8001/embeddings`
 
-````
-   - **Server**
-     ```bash
-cd ../server
-pnpm i
-````
+---
 
-## Running the Application
+## 🛠️ Tech Stack
 
-You can use Docker Compose to bring up all services together:
+- **Frontend:** Next.js 15, Tailwind 4, Clerk, React 19  
+- **Backend API:** Express, BullMQ, Clerk Auth  
+- **Worker:** LangChain, Qdrant, MongoDB, pdf-parse, OCR fallback  
+- **Embedder:** FastAPI + SentenceTransformers (`all-MiniLM-L6-v2`)  
+- **Infra:** Docker Compose (Valkey/Redis, MongoDB, Qdrant)
 
-```bash
-docker-compose up -d
-```
+---
 
-Then, start each service manually:
+## 🚀 Roadmap
 
-1. **Worker Server**
-   ```bash
-   cd ../server
-   pnpm dev:worker
-   ```
-
-````
-
-2. **Server**
-
-   ```bash
-   ```
-
-cd ../server
-pnpm dev
-
-```
-
-3. **Client**
-
-   ```bash
-   ```
-
-cd ../client
-pnpm dev
-
-```
-
-## Usage
-
-1. Upload a PDF via the client UI.
-2. The server worker will:
-   - Attempt to extract text with `@langchain/community` PDFLoader.
-   - If no text is found, fall back to OCR (Tesseract via node-tesseract-ocr).
-   - Split the text into chunks.
-   - Call the local embed-server to generate embeddings.
-   - Index the embeddings in Qdrant under `pdf-docs` collection.
-3. Use the client search interface to query the indexed documents semantically.
-
-## `.gitignore` Guidelines
-
-See the root `.gitignore` for patterns covering:
-- Node modules
-- Build outputs
-- System artifacts (logs, OS files, IDE folders)
-- Service-specific folders (`server/uploads/`, OCR temp files)
-
-This is an AI generated README, will modify later
-````
+- [x] OCR fallback for scanned PDFs (Tesseract).  
+- [ ] Multi-turn memory (session-based).  
+- [ ] Export chat as Markdown/PDF.  
+- [ ] Collaboration: share docs with team.
