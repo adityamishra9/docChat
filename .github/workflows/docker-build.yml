@@ -3,7 +3,7 @@ name: Build & Push Docker Images
 on:
   push:
     branches: [ master ]
-  workflow_dispatch: {}       # allow manual runs
+  workflow_dispatch: {}
 
 concurrency:
   group: docker-${{ github.ref }}
@@ -13,7 +13,6 @@ env:
   REGISTRY: docker.io
   IMAGE_NAMESPACE: ${{ secrets.DOCKERHUB_USERNAME }}
   PLATFORMS: linux/amd64,linux/arm64
-  SHORT_SHA: ${{ github.sha.substr(0,7) }}
 
 jobs:
   build-and-push:
@@ -25,6 +24,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Set SHORT_SHA env
+        run: echo "SHORT_SHA=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
