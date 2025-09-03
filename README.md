@@ -22,7 +22,7 @@ curl -fsSL https://docchat.adityamishra.tech | docker compose -p docchat -f - up
 
 ### 🪟 Windows (PowerShell)
 ```powershell
-iwr https://docchat.adityamishra.tech -OutFile docker-compose.yml; docker compose -p docchat -f docker-compose.yml up -d
+iwr https://docchat.adityamishra.tech -UseBasicParsing -OutFile docker-compose.yml; if ($?) { docker compose -p docchat -f docker-compose.yml up -d }
 ```
 
 Once complete, your app will be available at:
