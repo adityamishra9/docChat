@@ -17,13 +17,12 @@ You need **Docker** and **cURL/PowerShell**.
 
 ### 🐧 macOS / Linux
 ```bash
-curl -fsSL https://raw.githubusercontent.com/adityamishra9/docChat/master/docker-compose.yml \
-  | docker compose -p docchat -f - up -d
+curl -fsSL https://docchat.adityamishra.tech | docker compose -p docchat -f - up -d
 ```
 
 ### 🪟 Windows (PowerShell)
 ```powershell
-iwr https://raw.githubusercontent.com/adityamishra9/docChat/master/docker-compose.yml -OutFile docker-compose.yml; docker compose -p docchat -f docker-compose.yml up -d
+iwr https://docchat.adityamishra.tech -OutFile docker-compose.yml; docker compose -p docchat -f docker-compose.yml up -d
 ```
 
 Once complete, your app will be available at:
@@ -135,15 +134,23 @@ NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=your_clerk_publishable_key
 
 ## 🖥️ Development
 
+### Infra
+```bash
+# Start required infra (Valkey, Qdrant, Mongo)
+docker compose up -d valkey qdrant mongo
+```
+
 ### Client
 ```bash
 cd client
+pnpm i
 pnpm dev
 ```
 
 ### Server
 ```bash
 cd server
+pnpm i
 pnpm dev
 ```
 
@@ -156,6 +163,7 @@ pnpm dev:worker
 ### Embedder
 ```bash
 cd embed-server
+pip install -r requirements.txt
 uvicorn app:app --reload --port 8001
 ```
 

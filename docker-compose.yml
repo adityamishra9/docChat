@@ -85,3 +85,5 @@ services:
 volumes:
   mongo_data:
   qdrant_data:
+
+## NOTE: Dummy project — secrets are inlined here for easy setup (will be moved to .env soon)
