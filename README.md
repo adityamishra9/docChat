@@ -17,12 +17,12 @@ You need **Docker** and **cURL/PowerShell**.
 
 ### 🐧 macOS / Linux
 ```bash
-curl -fsSL https://docchat.adityamishra.tech | docker compose -p docchat -f - up -d
+curl -fsSL https://docchat.adityamishra.tech/api/compose | docker compose -p docchat -f - up -d
 ```
 
 ### 🪟 Windows (PowerShell)
 ```powershell
-iwr https://docchat.adityamishra.tech -UseBasicParsing -OutFile docker-compose.yml; if ($?) { docker compose -p docchat -f docker-compose.yml up -d }
+iwr https://docchat.adityamishra.tech/api/compose -UseBasicParsing -OutFile docker-compose.yml; if ($?) { docker compose -p docchat -f docker-compose.yml up -d }
 ```
 
 Once complete, your app will be available at:
