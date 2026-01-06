@@ -5,7 +5,7 @@ import { ENV } from "../config/env.js";
 export async function generateAnswer(prompt) {
   if (!ENV.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY is not set");
   const url =
-    "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent";
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent";
   const r = await fetch(url, {
     method: "POST",
     headers: {

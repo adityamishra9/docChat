@@ -42,7 +42,7 @@ services:
       REDIS_PORT: "6379"
       QDRANT_URL: http://qdrant:6333
       EMBEDDINGS_URL: http://embedder:8000/embeddings
-      GEMINI_API_KEY: AIzaSyCfmi00a-a0GebHZD6u22Gtt2GcY9tEqZ8
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
     depends_on: [valkey, mongo, qdrant, embedder]
     ports: ["8000:8000"]
 
