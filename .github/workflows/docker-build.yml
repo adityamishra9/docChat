@@ -3,7 +3,18 @@ name: Build & Push Docker Images
 on:
   push:
     branches: [ master ]
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      service:
+        description: 'Service to build'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+        - all
+        - server
+        - client
+        - embedder
 
 concurrency:
   group: docker-${{ github.ref }}
@@ -30,9 +41,20 @@ jobs:
       - id: set-matrix
         shell: bash
         run: |
-          # If manually dispatched, build everything.
+          # Handle Manual Dispatch with specific selection
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo 'matrix=[{"name":"server","context":"./server","dockerfile":"./server/Dockerfile","scope":"server","image":"docchat-server"}, {"name":"client","context":"./client","dockerfile":"./client/Dockerfile","scope":"client","image":"docchat-client"}, {"name":"embedder","context":"./embed-server","dockerfile":"./embed-server/Dockerfile","scope":"embedder","image":"docchat-embedder"}]' >> "$GITHUB_OUTPUT"
+            SCOPE="${{ inputs.service }}"
+            
+            if [[ "$SCOPE" == "all" ]]; then
+               echo 'matrix=[{"name":"server","context":"./server","dockerfile":"./server/Dockerfile","scope":"server","image":"docchat-server"}, {"name":"client","context":"./client","dockerfile":"./client/Dockerfile","scope":"client","image":"docchat-client"}, {"name":"embedder","context":"./embed-server","dockerfile":"./embed-server/Dockerfile","scope":"embedder","image":"docchat-embedder"}]' >> "$GITHUB_OUTPUT"
+            elif [[ "$SCOPE" == "server" ]]; then
+               echo 'matrix=[{"name":"server","context":"./server","dockerfile":"./server/Dockerfile","scope":"server","image":"docchat-server"}]' >> "$GITHUB_OUTPUT"
+            elif [[ "$SCOPE" == "client" ]]; then
+               echo 'matrix=[{"name":"client","context":"./client","dockerfile":"./client/Dockerfile","scope":"client","image":"docchat-client"}]' >> "$GITHUB_OUTPUT"
+            elif [[ "$SCOPE" == "embedder" ]]; then
+               echo 'matrix=[{"name":"embedder","context":"./embed-server","dockerfile":"./embed-server/Dockerfile","scope":"embedder","image":"docchat-embedder"}]' >> "$GITHUB_OUTPUT"
+            fi
+            
             echo "any_changed=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
